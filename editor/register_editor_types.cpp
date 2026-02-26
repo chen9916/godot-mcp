@@ -40,6 +40,7 @@
 #include "editor/audio/audio_stream_editor_plugin.h"
 #include "editor/audio/audio_stream_randomizer_editor_plugin.h"
 #include "editor/debugger/debug_adapter/debug_adapter_server.h"
+#include "editor/debugger/opencode_mcp/opencode_mcp_server.h"
 #include "editor/debugger/editor_debugger_plugin.h"
 #include "editor/docks/filesystem_dock.h"
 #include "editor/editor_interface.h"
@@ -248,6 +249,9 @@ void register_editor_types() {
 	EditorPlugins::add_by_type<MeshInstance3DEditorPlugin>();
 	EditorPlugins::add_by_type<MeshLibraryEditorPlugin>();
 	EditorPlugins::add_by_type<MultiMeshEditorPlugin>();
+	if (!Engine::get_singleton()->is_recovery_mode_hint()) {
+		EditorPlugins::add_by_type<OpenCodeMCPServer>();
+	}
 	EditorPlugins::add_by_type<OccluderInstance3DEditorPlugin>();
 	EditorPlugins::add_by_type<PackedSceneEditorPlugin>();
 	EditorPlugins::add_by_type<Path3DEditorPlugin>();
