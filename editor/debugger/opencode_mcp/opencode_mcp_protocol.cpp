@@ -51,7 +51,7 @@ struct TextEditRange {
 };
 } // namespace
 
-Error OpenCodeMCPProtocol::start(int p_requested_port, const String &p_token, const Dictionary &p_capabilities) {
+Error OpenCodeMCPProtocol::start(int p_requested_port, const Dictionary &p_capabilities) {
 	if (started) {
 		return OK;
 	}
@@ -64,7 +64,6 @@ Error OpenCodeMCPProtocol::start(int p_requested_port, const String &p_token, co
 
 	server = new_server;
 	remote_port = server->get_local_port();
-	session_token = p_token;
 	capabilities = p_capabilities;
 	clients.clear();
 	started = true;
@@ -89,7 +88,6 @@ void OpenCodeMCPProtocol::stop() {
 	}
 
 	remote_port = 0;
-	session_token.clear();
 	capabilities.clear();
 	started = false;
 }
@@ -191,23 +189,7 @@ String OpenCodeMCPProtocol::_capability_for_method(const String &p_method) const
 	return String();
 }
 
-bool OpenCodeMCPProtocol::_is_authorized(const String &p_method, Dictionary &r_params, int &r_error_code, String &r_error_message) const {
-	if (p_method == "opencode.session.info") {
-		return true;
-	}
-
-	String token = r_params.get("token", String());
-	if (token.is_empty()) {
-		token = r_params.get("_token", String());
-	}
-	if (token.is_empty() || token != session_token) {
-		r_error_code = ERROR_AUTH_FAILED;
-		r_error_message = "AUTH_FAILED: Invalid or missing session token.";
-		return false;
-	}
-	r_params.erase("token");
-	r_params.erase("_token");
-
+bool OpenCodeMCPProtocol::_is_method_allowed(const String &p_method, int &r_error_code, String &r_error_message) const {
 	String required_capability = _capability_for_method(p_method);
 	if (!required_capability.is_empty()) {
 		if (!bool(capabilities.get(required_capability, false))) {
@@ -281,13 +263,13 @@ Dictionary OpenCodeMCPProtocol::_process_request_line(const String &p_line) {
 	}
 
 	Dictionary params = params_variant;
-	int auth_error_code = 0;
-	String auth_error_message;
-	if (!_is_authorized(method, params, auth_error_code, auth_error_message)) {
+	int capability_error_code = 0;
+	String capability_error_message;
+	if (!_is_method_allowed(method, capability_error_code, capability_error_message)) {
 		if (is_notification) {
 			return Dictionary();
 		}
-		return _make_error_response(auth_error_code, auth_error_message, id);
+		return _make_error_response(capability_error_code, capability_error_message, id);
 	}
 
 	int method_error_code = 0;

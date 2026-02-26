@@ -5,7 +5,7 @@ This package exposes a local MCP stdio server for OpenCode and forwards tool cal
 ## What it does
 
 - Reads Godot session metadata from `.godot/opencode_mcp/session.json`.
-- Connects to `127.0.0.1:<session-port>` and injects the session token automatically.
+- Connects to `127.0.0.1:<session-port>` and forwards tool calls to Godot JSON-RPC.
 - Exposes `godot.*` MCP tools for scene/node/script/resource operations.
 - Can install a local OpenCode MCP config entry for testing.
 
@@ -41,11 +41,14 @@ npm run build
 From this folder:
 
 ```bash
-node dist/main.js --project-root "<path-to-godot-project>"
+node dist/main.js
 ```
+
+Session discovery defaults to current working directory and walks upward to find `.godot/opencode_mcp/session.json`.
 
 Optional flags:
 
+- `--project-root "<path-to-godot-project>"`
 - `--session-file "<absolute-path-to-session.json>"`
 - `--timeout-ms 15000`
 
@@ -54,8 +57,10 @@ Optional flags:
 This command upserts `mcp.godot-opencode-test` into `%USERPROFILE%/.config/opencode/opencode.json` with a local command entry.
 
 ```bash
-node dist/main.js --install-opencode-config --project-root "<path-to-godot-project>"
+node dist/main.js --install-opencode-config
 ```
+
+Optional: add `--project-root "<path-to-godot-project>"` to pin a project explicitly.
 
 Optional config target override:
 
@@ -74,9 +79,7 @@ The installer is idempotent and creates a timestamped backup before writing.
       "type": "local",
       "command": [
         "node",
-        "C:/.../misc/opencode_mcp_bridge/dist/main.js",
-        "--project-root",
-        "C:/.../your-godot-project"
+        "C:/.../misc/opencode_mcp_bridge/dist/main.js"
       ],
       "enabled": true
     }
@@ -88,15 +91,11 @@ The installer is idempotent and creates a timestamped backup before writing.
 
 - `SESSION_ERROR: Session file not found`
   - Open the project in Godot and enable `network/opencode_mcp/enabled`.
-- `SESSION_ERROR: Session token is expired`
+- `SESSION_ERROR: Session metadata is expired`
   - Restart or toggle the MCP setting in the editor.
 - `TRANSPORT_ERROR: Could not connect`
   - Confirm the editor is running and `session.json` port matches the active session.
-- `AUTH_FAILED`
-  - Session token is stale. Restart the bridge to reload session metadata.
 
 ## Security notes
 
-- The bridge does not persist the session token.
-- Token is only read from session metadata and attached per request.
 - Godot endpoint is localhost-only (`127.0.0.1`).

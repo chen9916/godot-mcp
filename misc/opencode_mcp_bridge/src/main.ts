@@ -11,7 +11,7 @@ import { load_session, SessionError, session_has_capability } from "./session.js
 import { get_tool_definition, get_tool_list_for_mcp } from "./tool_registry.js";
 
 interface CliOptions {
-	project_root: string;
+	project_root?: string;
 	session_file?: string;
 	config_path?: string;
 	timeout_ms: number;
@@ -21,7 +21,6 @@ interface CliOptions {
 
 function _parse_cli_options(p_argv: string[]): CliOptions {
 	const options: CliOptions = {
-		project_root: process.cwd(),
 		timeout_ms: 10_000,
 		install_opencode_config: false,
 		help: false,
@@ -85,7 +84,7 @@ function _print_help(): void {
 		"  node dist/main.js [options]",
 		"",
 		"Options:",
-		"  --project-root <path>          Project root used for .godot/opencode_mcp/session.json discovery.",
+		"  --project-root <path>          Optional project root for session discovery (auto-detected by default).",
 		"  --session-file <path>          Explicit session file path override.",
 		"  --timeout-ms <number>          RPC timeout in milliseconds (default: 10000).",
 		"  --install-opencode-config      Upsert mcp.godot-opencode-test in OpenCode user config and exit.",
@@ -179,6 +178,8 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 		}
 
 		const args = { ...(args_variant as Record<string, unknown>) };
+		delete args.token;
+		delete args._token;
 
 		try {
 			const session = load_session({
@@ -190,7 +191,9 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 				return _to_mcp_error(`CAPABILITY_DENIED: ${tool.capability} is disabled by current Godot session.`);
 			}
 
-			args.token = session.token;
+			if (session.token) {
+				args.token = session.token;
+			}
 
 			const client = await get_rpc_client(session.port);
 			const result = await client.call(tool.method, args);

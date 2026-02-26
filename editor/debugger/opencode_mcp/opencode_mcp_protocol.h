@@ -43,7 +43,6 @@ class Node;
 class OpenCodeMCPProtocol {
 public:
 	enum ErrorCode {
-		ERROR_AUTH_FAILED = -32001,
 		ERROR_CAPABILITY_DENIED = -32002,
 		ERROR_INVALID_ARGUMENT = -32003,
 		ERROR_CONFLICT = -32004,
@@ -64,11 +63,10 @@ private:
 
 	int remote_port = 0;
 	bool started = false;
-	String session_token;
 	Dictionary capabilities;
 
 	String _capability_for_method(const String &p_method) const;
-	bool _is_authorized(const String &p_method, Dictionary &r_params, int &r_error_code, String &r_error_message) const;
+	bool _is_method_allowed(const String &p_method, int &r_error_code, String &r_error_message) const;
 
 	Dictionary _make_response(const Variant &p_result, const Variant &p_id) const;
 	Dictionary _make_ok(const Variant &p_data = Variant(), const Array &p_warnings = Array()) const;
@@ -97,7 +95,7 @@ private:
 	static bool _apply_text_edits_to_source(const String &p_source, const Array &p_edits, String &r_updated_source, String &r_error_message);
 
 public:
-	Error start(int p_requested_port, const String &p_token, const Dictionary &p_capabilities);
+	Error start(int p_requested_port, const Dictionary &p_capabilities);
 	void stop();
 	void poll();
 

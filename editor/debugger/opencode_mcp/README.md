@@ -21,7 +21,7 @@ It is intended for local, live editing flows in the Godot editor (scene, node, a
 Example request:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"scene.get_active","params":{"token":"<session-token>"}}
+{"jsonrpc":"2.0","id":1,"method":"scene.get_active","params":{}}
 ```
 
 Example successful response:
@@ -39,18 +39,16 @@ When the server starts, it writes session metadata to:
 Session file payload includes:
 
 - `port`
-- `token`
 - `pid`
 - `expires_at`
 - `capabilities`
 
 The session file is removed when the server stops.
 
-## Authentication and capability checks
+## Capability checks
 
-- `opencode.session.info` is public.
-- All other methods require `params.token` (or `params._token`) that matches the current session token.
-- A method also requires its capability flag to be enabled in the current session.
+- Every method is available on localhost without per-request auth.
+- A method still requires its capability flag to be enabled in the current session.
 
 Capability map:
 
@@ -99,7 +97,6 @@ All mutating operations are wrapped through `EditorUndoRedoManager` actions.
 
 Method failures return JSON-RPC errors. Besides standard JSON-RPC codes, MCP-oriented server codes are:
 
-- `-32001`: auth failed
 - `-32002`: capability denied
 - `-32003`: invalid argument
 - `-32004`: conflict
@@ -118,7 +115,8 @@ Typical workflow:
 
 1. Build the bridge package (`npm ci && npm run build` in `misc/opencode_mcp_bridge`).
 2. Install the OpenCode test config entry:
-   - `node dist/main.js --install-opencode-config --project-root "<path-to-godot-project>"`
+   - `node dist/main.js --install-opencode-config`
+   - Optional: add `--project-root "<path-to-godot-project>"` when OpenCode does not start from your project root.
 3. Restart OpenCode to discover the new MCP server entry.
 
 The installed config entry key is `mcp.godot-opencode-test` and launches the bridge in stdio mode.

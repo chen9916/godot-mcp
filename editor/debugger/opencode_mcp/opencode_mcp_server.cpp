@@ -31,7 +31,6 @@
 #include "opencode_mcp_server.h"
 
 #include "core/config/project_settings.h"
-#include "core/crypto/crypto_core.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/os/os.h"
@@ -68,17 +67,6 @@ void OpenCodeMCPServer::_notification(int p_what) {
 	}
 }
 
-String OpenCodeMCPServer::_generate_session_token() const {
-	uint8_t buffer[32];
-	CryptoCore::RandomGenerator rng;
-	if (rng.init() == OK && rng.get_random_bytes(buffer, sizeof(buffer)) == OK) {
-		return String::hex_encode_buffer(buffer, sizeof(buffer));
-	}
-
-	String fallback_seed = vformat("%s:%s:%s", itos(OS::get_singleton()->get_unix_time()), itos(OS::get_singleton()->get_ticks_usec()), itos(OS::get_singleton()->get_process_id()));
-	return fallback_seed.md5_text();
-}
-
 String OpenCodeMCPServer::_session_file_path() const {
 	return "res://.godot/opencode_mcp/session.json";
 }
@@ -97,7 +85,6 @@ bool OpenCodeMCPServer::_write_session_file() const {
 
 	Dictionary session;
 	session["port"] = protocol.get_port();
-	session["token"] = session_token;
 	session["pid"] = OS::get_singleton()->get_process_id();
 	session["expires_at"] = OS::get_singleton()->get_unix_time() + 3600;
 	Dictionary session_capabilities;
@@ -145,7 +132,6 @@ void OpenCodeMCPServer::start() {
 	}
 
 	configured_port = EDITOR_GET("network/opencode_mcp/remote_port");
-	session_token = _generate_session_token();
 
 	Dictionary capabilities;
 	capabilities["read_scene"] = true;
@@ -154,7 +140,7 @@ void OpenCodeMCPServer::start() {
 	capabilities["write_script"] = true;
 	capabilities["save_resource"] = true;
 
-	if (protocol.start(configured_port, session_token, capabilities) != OK) {
+	if (protocol.start(configured_port, capabilities) != OK) {
 		EditorNode::get_log()->add_message("--- OpenCode MCP server failed to start ---", EditorLog::MSG_TYPE_ERROR);
 		return;
 	}
@@ -176,7 +162,6 @@ void OpenCodeMCPServer::stop() {
 
 	protocol.stop();
 	started = false;
-	session_token.clear();
 	set_process_internal(false);
 	_remove_session_file();
 

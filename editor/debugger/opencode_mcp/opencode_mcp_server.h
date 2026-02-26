@@ -40,11 +40,9 @@ class OpenCodeMCPServer : public EditorPlugin {
 
 	bool started = false;
 	int configured_port = 0;
-	String session_token;
 
 	void _notification(int p_what);
 
-	String _generate_session_token() const;
 	String _session_file_path() const;
 	bool _write_session_file() const;
 	void _remove_session_file() const;

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 export interface InstallConfigOptions {
-	project_root: string;
+	project_root?: string;
 	bridge_script_path: string;
 	config_path?: string;
 	session_file?: string;
@@ -61,7 +61,10 @@ export async function install_opencode_config(p_options: InstallConfigOptions): 
 		next.mcp = {};
 	}
 
-	const command = ["node", path.resolve(p_options.bridge_script_path), "--project-root", path.resolve(p_options.project_root)];
+	const command = ["node", path.resolve(p_options.bridge_script_path)];
+	if (p_options.project_root) {
+		command.push("--project-root", path.resolve(p_options.project_root));
+	}
 	if (p_options.session_file) {
 		command.push("--session-file", path.resolve(p_options.session_file));
 	}

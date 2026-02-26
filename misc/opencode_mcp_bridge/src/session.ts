@@ -14,7 +14,7 @@ export interface SessionCapabilities {
 
 export interface SessionData {
 	port: number;
-	token: string;
+	token?: string;
 	pid: number;
 	expires_at?: number;
 	capabilities: SessionCapabilities;
@@ -70,13 +70,43 @@ function _to_integer(p_value: unknown, p_name: string): number {
 	return p_value;
 }
 
+function _to_unix_seconds(p_value: unknown, p_name: string): number {
+	if (typeof p_value !== "number" || !Number.isFinite(p_value)) {
+		throw new SessionError(`${p_name} must be a number.`);
+	}
+	if (p_value <= 0) {
+		throw new SessionError(`${p_name} must be greater than 0.`);
+	}
+
+	// Godot may serialize unix time with sub-second precision.
+	return Math.floor(p_value);
+}
+
 export function resolve_session_file_path(p_options: SessionLoadOptions = {}): string {
 	if (p_options.session_file) {
 		return path.resolve(p_options.session_file);
 	}
 
-	const project_root = path.resolve(p_options.project_root ?? process.cwd());
-	return path.join(project_root, ".godot", "opencode_mcp", "session.json");
+	if (p_options.project_root) {
+		const project_root = path.resolve(p_options.project_root);
+		return path.join(project_root, ".godot", "opencode_mcp", "session.json");
+	}
+
+	let cursor = path.resolve(process.cwd());
+	while (true) {
+		const candidate = path.join(cursor, ".godot", "opencode_mcp", "session.json");
+		if (fs.existsSync(candidate)) {
+			return candidate;
+		}
+
+		const parent = path.dirname(cursor);
+		if (parent === cursor) {
+			break;
+		}
+		cursor = parent;
+	}
+
+	return path.join(path.resolve(process.cwd()), ".godot", "opencode_mcp", "session.json");
 }
 
 export function load_session(p_options: SessionLoadOptions = {}): SessionData {
@@ -102,8 +132,12 @@ export function load_session(p_options: SessionLoadOptions = {}): SessionData {
 		throw new SessionError("Session port must be in range 1..65535.");
 	}
 
-	if (typeof root.token !== "string" || root.token.length === 0) {
-		throw new SessionError("Session token must be a non-empty string.");
+	let token: string | undefined;
+	if (root.token !== undefined) {
+		if (typeof root.token !== "string" || root.token.length === 0) {
+			throw new SessionError("Session token must be a non-empty string.");
+		}
+		token = root.token;
 	}
 
 	const pid = _to_integer(root.pid, "pid");
@@ -115,16 +149,16 @@ export function load_session(p_options: SessionLoadOptions = {}): SessionData {
 
 	let expires_at: number | undefined;
 	if (root.expires_at !== undefined) {
-		expires_at = _to_integer(root.expires_at, "expires_at");
+		expires_at = _to_unix_seconds(root.expires_at, "expires_at");
 		const now_unix = p_options.now_unix ?? _default_now_unix();
 		if (expires_at <= now_unix) {
-			throw new SessionError("Session token is expired. Refresh from Godot editor.");
+			throw new SessionError("Session metadata is expired. Refresh from Godot editor.");
 		}
 	}
 
 	return {
 		port,
-		token: root.token,
+		token,
 		pid,
 		expires_at,
 		capabilities,
