@@ -17,10 +17,16 @@ This package exposes a local MCP stdio server for OpenCode and forwards tool cal
 - `godot.node.delete` -> `node.delete`
 - `godot.node.reparent` -> `node.reparent`
 - `godot.node.set_properties` -> `node.set_properties`
+- `godot.script.get_active` -> `script.get_active`
 - `godot.script.get` -> `script.get`
 - `godot.script.apply_text_edits` -> `script.apply_text_edits`
 - `godot.script.attach` -> `script.attach`
 - `godot.resource.save` -> `resource.save`
+
+`godot.script.get_active` returns whichever script tab is currently active in the editor.
+`godot.script.get` can resolve via `script_path`, `node_path`, or the active script tab when both are omitted.
+`godot.script.apply_text_edits` accepts either `script_path` or `node_path` (plus non-empty `edits`) and rejects no-op edits.
+After successful script edits, call `godot.resource.save` to persist changes to disk.
 
 ## Prerequisites
 

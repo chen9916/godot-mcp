@@ -101,8 +101,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 		},
 	},
 	{
+		name: "godot.script.get_active",
+		description: "Get source for the currently active script editor tab.",
+		method: "script.get_active",
+		capability: "read_script",
+		inputSchema: { type: "object", additionalProperties: false, properties: {} },
+	},
+	{
 		name: "godot.script.get",
-		description: "Get script source by script_path or node_path.",
+		description: "Get script source by script_path/node_path, or active script if omitted.",
 		method: "script.get",
 		capability: "read_script",
 		inputSchema: {
@@ -122,9 +129,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
-			required: ["script_path", "edits"],
+			required: ["edits"],
 			properties: {
 				script_path: { type: "string", description: "res:// script path" },
+				node_path: COMMON_PATH_SCHEMA,
 				expected_version: { type: "string" },
 				edits: {
 					type: "array",

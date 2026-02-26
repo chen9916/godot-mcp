@@ -39,6 +39,7 @@
 #include "core/variant/dictionary.h"
 
 class Node;
+class Script;
 
 class OpenCodeMCPProtocol {
 public:
@@ -82,14 +83,18 @@ private:
 	Dictionary _method_node_delete(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_node_reparent(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_node_set_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_script_get_active(int &r_error_code, String &r_error_message) const;
 	Dictionary _method_script_get(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_script_apply_text_edits(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_script_attach(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_resource_save(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Ref<Script> _find_script_in_tree(Node *p_root, const String &p_script_path) const;
+	Ref<Script> _resolve_script(const Dictionary &p_params, String &r_script_path, int &r_error_code, String &r_error_message) const;
 
 	Node *_get_edited_scene_root() const;
 	Node *_resolve_node_path(const String &p_node_path, Node *p_root) const;
 	Dictionary _serialize_node(Node *p_node, Node *p_root, int p_depth, int p_max_depth, int p_max_nodes, int &r_nodes_seen, bool &r_truncated) const;
+	bool _validate_property_value(Node *p_node, const StringName &p_property_name, const Variant &p_value, String &r_error_message) const;
 
 	static int _line_col_to_index(const String &p_text, int p_line, int p_col);
 	static bool _apply_text_edits_to_source(const String &p_source, const Array &p_edits, String &r_updated_source, String &r_error_message);

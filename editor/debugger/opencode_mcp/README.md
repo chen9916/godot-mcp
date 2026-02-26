@@ -54,7 +54,7 @@ Capability map:
 
 - `read_scene`: `scene.get_active`, `scene.get_tree`
 - `write_scene`: `node.create`, `node.delete`, `node.reparent`, `node.set_properties`
-- `read_script`: `script.get`
+- `read_script`: `script.get_active`, `script.get`
 - `write_script`: `script.apply_text_edits`, `script.attach`
 - `save_resource`: `resource.save`
 
@@ -78,13 +78,23 @@ Capability map:
   - Optional params: `position`, `new_name`.
 - `node.set_properties`
   - Required params: `node_path`, non-empty `properties` dictionary.
+  - For `Node3D`, rejects invalid transform writes before applying:
+    - `scale` with any zero component,
+    - non-invertible `basis` / `global_basis`,
+    - `transform` / `global_transform` with non-invertible basis.
 - `script.get`
-  - Required either `script_path` or `node_path` (for attached script lookup).
+  - If `script_path`/`node_path` are omitted, returns the currently active script editor tab.
+  - With params, resolves by `script_path` or `node_path` (for attached script lookup).
   - Returns source text and version hash (`md5`).
+- `script.get_active`
+  - No params.
+  - Returns the currently active script tab (`script_path`, `display_name`, `is_built_in`, `is_unsaved`) plus source text and version hash (`md5`).
 - `script.apply_text_edits`
-  - Required params: `script_path`, `edits`.
+  - Required params: `edits` and either `script_path` or `node_path`.
   - Optional `expected_version` enables optimistic concurrency check.
   - Edit coordinates are zero-based line/column (`start_line`, `start_col`, `end_line`, `end_col`).
+  - Rejects empty edit arrays and no-op edits (returns conflict when resulting source is unchanged).
+  - On success, source is updated in editor state; call `resource.save` to persist to disk.
 - `script.attach`
   - Required params: `node_path`, `script_path` (`res://`).
 - `resource.save`

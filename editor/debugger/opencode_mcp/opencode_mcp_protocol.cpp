@@ -31,6 +31,7 @@
 #include "opencode_mcp_protocol.h"
 
 #include "core/io/json.h"
+#include "core/io/resource.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
@@ -40,6 +41,7 @@
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/script/script_editor_plugin.h"
+#include "scene/3d/node_3d.h"
 #include "scene/main/node.h"
 #include "core/object/script_language.h"
 
@@ -177,7 +179,7 @@ String OpenCodeMCPProtocol::_capability_for_method(const String &p_method) const
 	if (p_method == "node.create" || p_method == "node.delete" || p_method == "node.reparent" || p_method == "node.set_properties") {
 		return "write_scene";
 	}
-	if (p_method == "script.get") {
+	if (p_method == "script.get" || p_method == "script.get_active") {
 		return "read_script";
 	}
 	if (p_method == "script.apply_text_edits" || p_method == "script.attach") {
@@ -313,6 +315,9 @@ Dictionary OpenCodeMCPProtocol::_dispatch_method(const String &p_method, const D
 	if (p_method == "script.get") {
 		return _method_script_get(p_params, r_error_code, r_error_message);
 	}
+	if (p_method == "script.get_active") {
+		return _method_script_get_active(r_error_code, r_error_message);
+	}
 	if (p_method == "script.apply_text_edits") {
 		return _method_script_apply_text_edits(p_params, r_error_code, r_error_message);
 	}
@@ -353,6 +358,99 @@ Node *OpenCodeMCPProtocol::_resolve_node_path(const String &p_node_path, Node *p
 	}
 
 	return p_root->get_node_or_null(NodePath(p_node_path));
+}
+
+Ref<Script> OpenCodeMCPProtocol::_find_script_in_tree(Node *p_root, const String &p_script_path) const {
+	if (!p_root) {
+		return Ref<Script>();
+	}
+
+	Ref<Script> script = p_root->get_script();
+	if (script.is_valid() && script->get_path() == p_script_path) {
+		return script;
+	}
+
+	for (int i = 0; i < p_root->get_child_count(); i++) {
+		Ref<Script> child_script = _find_script_in_tree(p_root->get_child(i), p_script_path);
+		if (child_script.is_valid()) {
+			return child_script;
+		}
+	}
+
+	return Ref<Script>();
+}
+
+Ref<Script> OpenCodeMCPProtocol::_resolve_script(const Dictionary &p_params, String &r_script_path, int &r_error_code, String &r_error_message) const {
+	String script_path = p_params.get("script_path", String());
+	String node_path = p_params.get("node_path", String());
+	Ref<Script> script;
+
+	Node *root = nullptr;
+	if (!node_path.is_empty()) {
+		root = _get_edited_scene_root();
+		if (!root) {
+			r_error_code = ERROR_NOT_FOUND;
+			r_error_message = "NOT_FOUND: No edited scene is currently open.";
+			return Ref<Script>();
+		}
+
+		Node *node = _resolve_node_path(node_path, root);
+		if (!node) {
+			r_error_code = ERROR_NOT_FOUND;
+			r_error_message = "NOT_FOUND: Node path does not exist.";
+			return Ref<Script>();
+		}
+
+		script = node->get_script();
+		if (script.is_null()) {
+			r_error_code = ERROR_NOT_FOUND;
+			r_error_message = "NOT_FOUND: Node has no attached script.";
+			return Ref<Script>();
+		}
+
+		if (script_path.is_empty()) {
+			script_path = script->get_path();
+		}
+	}
+
+	if (script.is_null()) {
+		if (script_path.is_empty()) {
+			r_error_code = ERROR_INVALID_ARGUMENT;
+			r_error_message = "INVALID_ARGUMENT: provide script_path or a valid node_path.";
+			return Ref<Script>();
+		}
+
+		if (!script_path.begins_with("res://")) {
+			r_error_code = ERROR_INVALID_ARGUMENT;
+			r_error_message = "INVALID_ARGUMENT: script_path must start with res://";
+			return Ref<Script>();
+		}
+
+		script = ResourceCache::get_ref(script_path);
+		if (script.is_null()) {
+			if (!root) {
+				root = _get_edited_scene_root();
+			}
+			if (root) {
+				script = _find_script_in_tree(root, script_path);
+			}
+		}
+		if (script.is_null()) {
+			script = ResourceLoader::load(script_path);
+		}
+		if (script.is_null()) {
+			r_error_code = ERROR_NOT_FOUND;
+			r_error_message = "NOT_FOUND: Script resource could not be loaded.";
+			return Ref<Script>();
+		}
+	}
+
+	r_script_path = script->get_path();
+	if (r_script_path.is_empty()) {
+		r_script_path = script_path;
+	}
+
+	return script;
 }
 
 Dictionary OpenCodeMCPProtocol::_method_scene_get_active(int &r_error_code, String &r_error_message) const {
@@ -488,6 +586,17 @@ Dictionary OpenCodeMCPProtocol::_method_node_create(const Dictionary &p_params, 
 	}
 	node->set_name(node_name);
 	node->set_name(parent->validate_child_name(node));
+
+	for (const KeyValue<Variant, Variant> &E : initial_properties) {
+		StringName property_name = E.key;
+		String property_error;
+		if (!_validate_property_value(node, property_name, E.value, property_error)) {
+			memdelete(node);
+			r_error_code = ERROR_INVALID_ARGUMENT;
+			r_error_message = property_error;
+			return Dictionary();
+		}
+	}
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	EditorData &editor_data = EditorNode::get_editor_data();
@@ -638,6 +747,55 @@ Dictionary OpenCodeMCPProtocol::_method_node_reparent(const Dictionary &p_params
 	return _make_ok(data);
 }
 
+bool OpenCodeMCPProtocol::_validate_property_value(Node *p_node, const StringName &p_property_name, const Variant &p_value, String &r_error_message) const {
+	Node3D *node_3d = Object::cast_to<Node3D>(p_node);
+	if (!node_3d) {
+		return true;
+	}
+
+	const String property_name = String(p_property_name);
+	if (property_name == "scale") {
+		if (p_value.get_type() != Variant::VECTOR3) {
+			r_error_message = "INVALID_ARGUMENT: scale must be a Vector3.";
+			return false;
+		}
+
+		const Vector3 scale = p_value;
+		if (Math::is_zero_approx(scale.x) || Math::is_zero_approx(scale.y) || Math::is_zero_approx(scale.z)) {
+			r_error_message = "INVALID_ARGUMENT: scale components must be non-zero.";
+			return false;
+		}
+	}
+
+	if (property_name == "basis" || property_name == "global_basis") {
+		if (p_value.get_type() != Variant::BASIS) {
+			r_error_message = "INVALID_ARGUMENT: basis must be a Basis.";
+			return false;
+		}
+
+		const Basis basis = p_value;
+		if (Math::is_zero_approx(basis.determinant())) {
+			r_error_message = "INVALID_ARGUMENT: basis must be invertible (determinant != 0).";
+			return false;
+		}
+	}
+
+	if (property_name == "transform" || property_name == "global_transform") {
+		if (p_value.get_type() != Variant::TRANSFORM3D) {
+			r_error_message = "INVALID_ARGUMENT: transform must be a Transform3D.";
+			return false;
+		}
+
+		const Transform3D transform = p_value;
+		if (Math::is_zero_approx(transform.basis.determinant())) {
+			r_error_message = "INVALID_ARGUMENT: transform basis must be invertible (determinant != 0).";
+			return false;
+		}
+	}
+
+	return true;
+}
+
 Dictionary OpenCodeMCPProtocol::_method_node_set_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
 	Node *root = _get_edited_scene_root();
 	if (!root) {
@@ -671,6 +829,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_set_properties(const Dictionary &p_
 			r_error_message = "INVALID_ARGUMENT: unknown property: " + String(property_name);
 			return Dictionary();
 		}
+		if (!_validate_property_value(node, property_name, E.value, r_error_message)) {
+			r_error_code = ERROR_INVALID_ARGUMENT;
+			return Dictionary();
+		}
 		previous_values[property_name] = old_value;
 	}
 
@@ -692,36 +854,49 @@ Dictionary OpenCodeMCPProtocol::_method_node_set_properties(const Dictionary &p_
 	return _make_ok(data);
 }
 
-Dictionary OpenCodeMCPProtocol::_method_script_get(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	String script_path = p_params.get("script_path", String());
-	if (script_path.is_empty()) {
-		String node_path = p_params.get("node_path", String());
-		Node *root = _get_edited_scene_root();
-		Node *node = _resolve_node_path(node_path, root);
-		if (!node) {
-			r_error_code = ERROR_INVALID_ARGUMENT;
-			r_error_message = "INVALID_ARGUMENT: provide script_path or a valid node_path.";
-			return Dictionary();
-		}
-		Ref<Script> node_script = node->get_script();
-		if (node_script.is_null()) {
-			r_error_code = ERROR_NOT_FOUND;
-			r_error_message = "NOT_FOUND: Node has no attached script.";
-			return Dictionary();
-		}
-		script_path = node_script->get_path();
-	}
-
-	if (!script_path.begins_with("res://")) {
-		r_error_code = ERROR_INVALID_ARGUMENT;
-		r_error_message = "INVALID_ARGUMENT: script_path must start with res://";
+Dictionary OpenCodeMCPProtocol::_method_script_get_active(int &r_error_code, String &r_error_message) const {
+	ScriptEditor *script_editor = ScriptEditor::get_singleton();
+	if (!script_editor) {
+		r_error_code = ERROR_NOT_FOUND;
+		r_error_message = "NOT_FOUND: Script editor is not available.";
 		return Dictionary();
 	}
 
-	Ref<Script> script = ResourceLoader::load(script_path);
+	ScriptEditorBase *current_editor = script_editor->get_current_editor();
+	if (!current_editor) {
+		r_error_code = ERROR_NOT_FOUND;
+		r_error_message = "NOT_FOUND: No script editor tab is currently active.";
+		return Dictionary();
+	}
+
+	Ref<Script> script = current_editor->get_edited_resource();
 	if (script.is_null()) {
 		r_error_code = ERROR_NOT_FOUND;
-		r_error_message = "NOT_FOUND: Script resource could not be loaded.";
+		r_error_message = "NOT_FOUND: The active editor tab is not a script.";
+		return Dictionary();
+	}
+
+	const String source = script->get_source_code();
+	Dictionary data;
+	data["script_path"] = script->get_path();
+	data["display_name"] = current_editor->get_name();
+	data["is_built_in"] = script->is_built_in();
+	data["is_unsaved"] = current_editor->is_unsaved();
+	data["source"] = source;
+	data["version"] = source.md5_text();
+	return _make_ok(data);
+}
+
+Dictionary OpenCodeMCPProtocol::_method_script_get(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
+	const String script_path_param = p_params.get("script_path", String());
+	const String node_path_param = p_params.get("node_path", String());
+	if (script_path_param.is_empty() && node_path_param.is_empty()) {
+		return _method_script_get_active(r_error_code, r_error_message);
+	}
+
+	String script_path;
+	Ref<Script> script = _resolve_script(p_params, script_path, r_error_code, r_error_message);
+	if (script.is_null()) {
 		return Dictionary();
 	}
 
@@ -821,13 +996,6 @@ bool OpenCodeMCPProtocol::_apply_text_edits_to_source(const String &p_source, co
 }
 
 Dictionary OpenCodeMCPProtocol::_method_script_apply_text_edits(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	String script_path = p_params.get("script_path", String());
-	if (!script_path.begins_with("res://")) {
-		r_error_code = ERROR_INVALID_ARGUMENT;
-		r_error_message = "INVALID_ARGUMENT: script_path must start with res://";
-		return Dictionary();
-	}
-
 	Variant edits_variant = p_params.get("edits", Variant());
 	if (edits_variant.get_type() != Variant::ARRAY) {
 		r_error_code = ERROR_INVALID_ARGUMENT;
@@ -835,11 +1003,15 @@ Dictionary OpenCodeMCPProtocol::_method_script_apply_text_edits(const Dictionary
 		return Dictionary();
 	}
 	Array edits = edits_variant;
+	if (edits.is_empty()) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: edits must be non-empty.";
+		return Dictionary();
+	}
 
-	Ref<Script> script = ResourceLoader::load(script_path);
+	String script_path;
+	Ref<Script> script = _resolve_script(p_params, script_path, r_error_code, r_error_message);
 	if (script.is_null()) {
-		r_error_code = ERROR_NOT_FOUND;
-		r_error_message = "NOT_FOUND: Script resource could not be loaded.";
 		return Dictionary();
 	}
 
@@ -858,6 +1030,11 @@ Dictionary OpenCodeMCPProtocol::_method_script_apply_text_edits(const Dictionary
 		r_error_message = edit_error;
 		return Dictionary();
 	}
+	if (updated_source == current_source) {
+		r_error_code = ERROR_CONFLICT;
+		r_error_message = "CONFLICT: edits produced no source changes.";
+		return Dictionary();
+	}
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	EditorData &editor_data = EditorNode::get_editor_data();
@@ -867,19 +1044,22 @@ Dictionary OpenCodeMCPProtocol::_method_script_apply_text_edits(const Dictionary
 	undo_redo->add_do_method(script.ptr(), "update_exports");
 	undo_redo->add_undo_method(script.ptr(), "update_exports");
 
+	undo_redo->commit_action();
+
 	ScriptEditor *script_editor = ScriptEditor::get_singleton();
 	if (script_editor) {
-		undo_redo->add_do_method(script_editor, "notify_script_changed", script);
-		undo_redo->add_undo_method(script_editor, "notify_script_changed", script);
-		undo_redo->add_do_method(script_editor, "trigger_live_script_reload", script_path);
+		script_editor->notify_script_changed(script);
+		if (!script_path.is_empty()) {
+			script_editor->trigger_live_script_reload(script_path);
+		}
 	}
-
-	undo_redo->commit_action();
 
 	Dictionary data;
 	data["script_path"] = script_path;
 	data["version"] = updated_source.md5_text();
-	return _make_ok(data);
+	Array warnings;
+	warnings.push_back("Script text updated in editor state; call resource.save to persist to disk.");
+	return _make_ok(data, warnings);
 }
 
 Dictionary OpenCodeMCPProtocol::_method_script_attach(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
