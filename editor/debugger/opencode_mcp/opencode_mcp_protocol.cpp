@@ -36,13 +36,12 @@
 #include "core/object/class_db.h"
 #include "core/object/undo_redo.h"
 #include "core/templates/vector.h"
-#include "core/variant/packed_byte_array.h"
 #include "editor/editor_data.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/script/script_editor_plugin.h"
 #include "scene/main/node.h"
-#include "scene/resources/script.h"
+#include "core/object/script_language.h"
 
 namespace {
 struct TextEditRange {
@@ -77,7 +76,7 @@ void OpenCodeMCPProtocol::stop() {
 		return;
 	}
 
-	for (int i = 0; i < clients.size(); i++) {
+	for (int i = 0; i < (int)clients.size(); i++) {
 		if (clients[i].peer.is_valid()) {
 			clients[i].peer->disconnect_from_host();
 		}
@@ -505,7 +504,8 @@ Dictionary OpenCodeMCPProtocol::_method_node_create(const Dictionary &p_params, 
 	if (node_name.is_empty()) {
 		node_name = type_name;
 	}
-	node->set_name(parent->validate_child_name(node_name));
+	node->set_name(node_name);
+	node->set_name(parent->validate_child_name(node));
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	EditorData &editor_data = EditorNode::get_editor_data();
