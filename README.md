@@ -4,6 +4,26 @@
 > MCP docs: [`editor/debugger/opencode_mcp/README.md`](editor/debugger/opencode_mcp/README.md)  
 > Bridge docs: [`misc/opencode_mcp_bridge/README.md`](misc/opencode_mcp_bridge/README.md)
 
+## OpenCode MCP quick setup
+
+1. Build the bridge package:
+
+```bash
+cd misc/opencode_mcp_bridge
+npm ci
+npm run build
+```
+
+2. Install the OpenCode MCP config entry:
+
+```bash
+node dist/main.js --install-opencode-config --project-root "<path-to-godot-project>"
+```
+
+3. Restart OpenCode.
+4. In Godot Editor Settings, enable `network/opencode_mcp/enabled`.
+5. If needed, use `Refresh MCP Session` under `network/opencode_mcp`.
+
 <p align="center">
   <a href="https://godotengine.org">
     <img src="misc/logo/logo_outlined.svg" width="400" alt="Godot Engine logo">
