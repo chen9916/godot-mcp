@@ -38,9 +38,28 @@
 #include "editor/editor_node.h"
 #include "editor/settings/editor_settings.h"
 
+namespace {
+constexpr uint64_t SESSION_REFRESH_INTERVAL_SEC = 300;
+constexpr uint64_t SESSION_WRITE_WARNING_COOLDOWN_SEC = 60;
+}
+
+OpenCodeMCPServer *OpenCodeMCPServer::singleton = nullptr;
+
 OpenCodeMCPServer::OpenCodeMCPServer() {
+	singleton = this;
+
 	_EDITOR_DEF("network/opencode_mcp/enabled", false);
-	_EDITOR_DEF("network/opencode_mcp/remote_port", 0);
+
+	EditorSettings *editor_settings = EditorSettings::get_singleton();
+	if (editor_settings && editor_settings->has_setting("network/opencode_mcp/remote_port")) {
+		editor_settings->erase("network/opencode_mcp/remote_port");
+	}
+}
+
+OpenCodeMCPServer::~OpenCodeMCPServer() {
+	if (singleton == this) {
+		singleton = nullptr;
+	}
 }
 
 void OpenCodeMCPServer::_notification(int p_what) {
@@ -56,6 +75,7 @@ void OpenCodeMCPServer::_notification(int p_what) {
 		case NOTIFICATION_INTERNAL_PROCESS: {
 			if (started) {
 				protocol.poll();
+				_refresh_session_file(false);
 			}
 		} break;
 
@@ -93,6 +113,10 @@ bool OpenCodeMCPServer::_write_session_file() const {
 	session_capabilities["read_script"] = true;
 	session_capabilities["write_script"] = true;
 	session_capabilities["save_resource"] = true;
+	session_capabilities["read_resource"] = true;
+	session_capabilities["write_resource"] = true;
+	session_capabilities["read_project"] = true;
+	session_capabilities["write_project"] = true;
 	session["capabilities"] = session_capabilities;
 
 	file->store_string(Variant(session).to_json_string());
@@ -108,7 +132,6 @@ void OpenCodeMCPServer::_remove_session_file() const {
 
 void OpenCodeMCPServer::_refresh_server_state() {
 	bool enabled = EDITOR_GET("network/opencode_mcp/enabled");
-	int desired_port = EDITOR_GET("network/opencode_mcp/remote_port");
 
 	if (!enabled) {
 		stop();
@@ -117,13 +140,30 @@ void OpenCodeMCPServer::_refresh_server_state() {
 
 	if (!started) {
 		start();
-		return;
+	}
+}
+
+bool OpenCodeMCPServer::_refresh_session_file(bool p_force) {
+	if (!started) {
+		return false;
 	}
 
-	if (configured_port != desired_port) {
-		stop();
-		start();
+	const uint64_t now = OS::get_singleton()->get_unix_time();
+	if (!p_force && now < last_session_write_unix + SESSION_REFRESH_INTERVAL_SEC) {
+		return true;
 	}
+
+	if (_write_session_file()) {
+		last_session_write_unix = now;
+		return true;
+	}
+
+	if (now >= last_session_write_warning_unix + SESSION_WRITE_WARNING_COOLDOWN_SEC) {
+		EditorNode::get_log()->add_message("--- OpenCode MCP server could not refresh session file ---", EditorLog::MSG_TYPE_WARNING);
+		last_session_write_warning_unix = now;
+	}
+
+	return false;
 }
 
 void OpenCodeMCPServer::start() {
@@ -131,24 +171,28 @@ void OpenCodeMCPServer::start() {
 		return;
 	}
 
-	configured_port = EDITOR_GET("network/opencode_mcp/remote_port");
-
 	Dictionary capabilities;
 	capabilities["read_scene"] = true;
 	capabilities["write_scene"] = true;
 	capabilities["read_script"] = true;
 	capabilities["write_script"] = true;
 	capabilities["save_resource"] = true;
+	capabilities["read_resource"] = true;
+	capabilities["write_resource"] = true;
+	capabilities["read_project"] = true;
+	capabilities["write_project"] = true;
 
-	if (protocol.start(configured_port, capabilities) != OK) {
+	if (protocol.start(0, capabilities) != OK) {
 		EditorNode::get_log()->add_message("--- OpenCode MCP server failed to start ---", EditorLog::MSG_TYPE_ERROR);
 		return;
 	}
 
 	started = true;
+	last_session_write_unix = 0;
+	last_session_write_warning_unix = 0;
 	set_process_internal(true);
 
-	if (!_write_session_file()) {
+	if (!_refresh_session_file(true)) {
 		EditorNode::get_log()->add_message("--- OpenCode MCP server started, but session file could not be written ---", EditorLog::MSG_TYPE_WARNING);
 	} else {
 		EditorNode::get_log()->add_message("--- OpenCode MCP server started on port " + itos(protocol.get_port()) + " ---", EditorLog::MSG_TYPE_EDITOR);
@@ -162,8 +206,23 @@ void OpenCodeMCPServer::stop() {
 
 	protocol.stop();
 	started = false;
+	last_session_write_unix = 0;
+	last_session_write_warning_unix = 0;
 	set_process_internal(false);
 	_remove_session_file();
 
 	EditorNode::get_log()->add_message("--- OpenCode MCP server stopped ---", EditorLog::MSG_TYPE_EDITOR);
+}
+
+void OpenCodeMCPServer::refresh_session_metadata() {
+	_refresh_server_state();
+
+	if (!started) {
+		EditorNode::get_log()->add_message("--- OpenCode MCP session refresh skipped (server is disabled) ---", EditorLog::MSG_TYPE_WARNING);
+		return;
+	}
+
+	if (_refresh_session_file(true)) {
+		EditorNode::get_log()->add_message("--- OpenCode MCP session metadata refreshed ---", EditorLog::MSG_TYPE_EDITOR);
+	}
 }

@@ -36,21 +36,29 @@
 class OpenCodeMCPServer : public EditorPlugin {
 	GDCLASS(OpenCodeMCPServer, EditorPlugin);
 
+	static OpenCodeMCPServer *singleton;
+
 	OpenCodeMCPProtocol protocol;
 
 	bool started = false;
-	int configured_port = 0;
+	uint64_t last_session_write_unix = 0;
+	uint64_t last_session_write_warning_unix = 0;
 
 	void _notification(int p_what);
 
 	String _session_file_path() const;
 	bool _write_session_file() const;
+	bool _refresh_session_file(bool p_force);
 	void _remove_session_file() const;
 	void _refresh_server_state();
 
 public:
+	static OpenCodeMCPServer *get_singleton() { return singleton; }
+
 	OpenCodeMCPServer();
+	~OpenCodeMCPServer() override;
 
 	void start();
 	void stop();
+	void refresh_session_metadata();
 };

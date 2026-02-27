@@ -3561,6 +3561,26 @@ Vector<Ref<Script>> ScriptEditor::get_open_scripts() const {
 	return out_scripts;
 }
 
+ScriptEditorBase *ScriptEditor::find_open_script_editor(const Ref<Script> &p_script, const String &p_script_path) const {
+	for (int i = 0; i < tab_container->get_tab_count(); i++) {
+		ScriptEditorBase *seb = Object::cast_to<ScriptEditorBase>(tab_container->get_tab_control(i));
+		if (!seb) {
+			continue;
+		}
+
+		Ref<Script> edited_script = seb->get_edited_resource();
+		if (edited_script.is_valid() && p_script.is_valid() && edited_script == p_script) {
+			return seb;
+		}
+
+		if (!p_script_path.is_empty() && edited_script.is_valid() && edited_script->get_path() == p_script_path) {
+			return seb;
+		}
+	}
+
+	return nullptr;
+}
+
 TypedArray<ScriptEditorBase> ScriptEditor::_get_open_script_editors() const {
 	TypedArray<ScriptEditorBase> script_editors;
 	for (int i = 0; i < tab_container->get_tab_count(); i++) {

@@ -16,7 +16,8 @@ export interface InstallConfigResult {
 	entry_key: string;
 }
 
-const MCP_ENTRY_KEY = "godot-opencode-test";
+const MCP_ENTRY_KEY = "godot-opencode";
+const LEGACY_MCP_ENTRY_KEY = "godot-opencode-test";
 
 function _timestamp_id(): string {
 	const now = new Date();
@@ -76,6 +77,9 @@ export async function install_opencode_config(p_options: InstallConfigOptions): 
 	};
 
 	const mcp = next.mcp as Record<string, unknown>;
+	if (LEGACY_MCP_ENTRY_KEY in mcp) {
+		delete mcp[LEGACY_MCP_ENTRY_KEY];
+	}
 	const previous_entry = mcp[MCP_ENTRY_KEY];
 	if (_stable_json(previous_entry) === _stable_json(desired_entry)) {
 		return {

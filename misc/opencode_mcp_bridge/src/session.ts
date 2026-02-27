@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { GodotCapability } from "./tool_registry.js";
@@ -9,6 +10,10 @@ export interface SessionCapabilities {
 	read_script?: boolean;
 	write_script?: boolean;
 	save_resource?: boolean;
+	read_resource?: boolean;
+	write_resource?: boolean;
+	read_project?: boolean;
+	write_project?: boolean;
 	[key: string]: unknown;
 }
 
@@ -82,6 +87,82 @@ function _to_unix_seconds(p_value: unknown, p_name: string): number {
 	return Math.floor(p_value);
 }
 
+function _get_godot_projects_cfg_candidates(): string[] {
+	const candidates: string[] = [];
+	if (process.platform === "win32") {
+		const appdata = process.env.APPDATA;
+		if (appdata) {
+			candidates.push(path.join(appdata, "Godot", "projects.cfg"));
+		}
+	} else if (process.platform === "darwin") {
+		candidates.push(path.join(os.homedir(), "Library", "Application Support", "Godot", "projects.cfg"));
+	} else {
+		candidates.push(path.join(os.homedir(), ".config", "godot", "projects.cfg"));
+	}
+
+	return candidates;
+}
+
+function _read_recent_project_roots(): string[] {
+	for (const cfg_path of _get_godot_projects_cfg_candidates()) {
+		if (!fs.existsSync(cfg_path)) {
+			continue;
+		}
+
+		let content = "";
+		try {
+			content = fs.readFileSync(cfg_path, "utf8");
+		} catch {
+			continue;
+		}
+
+		const roots: string[] = [];
+		for (const raw_line of content.split(/\r?\n/)) {
+			const line = raw_line.trim();
+			if (!line.startsWith("[") || !line.endsWith("]") || line.length < 3) {
+				continue;
+			}
+			const section = line.slice(1, -1).trim();
+			if (!section || !path.isAbsolute(section)) {
+				continue;
+			}
+			roots.push(path.resolve(section));
+		}
+
+		if (roots.length > 0) {
+			return roots;
+		}
+	}
+
+	return [];
+}
+
+function _auto_detect_session_file_from_recent_projects(): string | null {
+	const candidates: Array<{ session_path: string; mtime_ms: number }> = [];
+	for (const project_root of _read_recent_project_roots()) {
+		const session_path = path.join(project_root, ".godot", "opencode_mcp", "session.json");
+		if (!fs.existsSync(session_path)) {
+			continue;
+		}
+
+		let mtime_ms = 0;
+		try {
+			mtime_ms = fs.statSync(session_path).mtimeMs;
+		} catch {
+			mtime_ms = 0;
+		}
+
+		candidates.push({ session_path, mtime_ms });
+	}
+
+	if (candidates.length === 0) {
+		return null;
+	}
+
+	candidates.sort((p_a, p_b) => p_b.mtime_ms - p_a.mtime_ms);
+	return candidates[0].session_path;
+}
+
 export function resolve_session_file_path(p_options: SessionLoadOptions = {}): string {
 	if (p_options.session_file) {
 		return path.resolve(p_options.session_file);
@@ -104,6 +185,11 @@ export function resolve_session_file_path(p_options: SessionLoadOptions = {}): s
 			break;
 		}
 		cursor = parent;
+	}
+
+	const auto_detected_session_file = _auto_detect_session_file_from_recent_projects();
+	if (auto_detected_session_file) {
+		return auto_detected_session_file;
 	}
 
 	return path.join(path.resolve(process.cwd()), ".godot", "opencode_mcp", "session.json");
@@ -152,7 +238,7 @@ export function load_session(p_options: SessionLoadOptions = {}): SessionData {
 		expires_at = _to_unix_seconds(root.expires_at, "expires_at");
 		const now_unix = p_options.now_unix ?? _default_now_unix();
 		if (expires_at <= now_unix) {
-			throw new SessionError("Session metadata is expired. Refresh from Godot editor.");
+			throw new SessionError("Session metadata is expired. Use Editor Settings > network/opencode_mcp > Refresh MCP Session, or toggle MCP enabled.");
 		}
 	}
 

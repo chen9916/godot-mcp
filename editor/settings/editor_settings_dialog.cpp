@@ -36,6 +36,7 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/os/keyboard.h"
+#include "editor/debugger/opencode_mcp/opencode_mcp_server.h"
 #include "editor/debugger/editor_debugger_node.h"
 #include "editor/editor_log.h"
 #include "editor/editor_node.h"
@@ -221,6 +222,7 @@ void EditorSettingsDialog::popup_edit_settings() {
 
 	inspector->edit(EditorSettings::get_singleton());
 	inspector->get_inspector()->update_tree();
+	_editor_settings_category_changed(inspector->get_current_section());
 
 	_update_shortcuts();
 	set_process_shortcut_input(true);
@@ -877,10 +879,30 @@ void EditorSettingsDialog::drop_data_fw(const Point2 &p_point, const Variant &p_
 
 void EditorSettingsDialog::_tabs_tab_changed(int p_tab) {
 	_focus_current_search_box();
+	_editor_settings_category_changed(inspector->get_current_section());
 
 	// When tab has switched, shortcuts may have changed.
 	_update_dynamic_property_hints();
 	inspector->get_inspector()->update_tree();
+}
+
+void EditorSettingsDialog::_editor_settings_category_changed(const String &p_category) {
+	if (!opencode_mcp_refresh_button) {
+		return;
+	}
+
+	const bool in_general_tab = tabs->get_current_tab_control() == tab_general;
+	opencode_mcp_refresh_button->set_visible(in_general_tab && p_category == "network/opencode_mcp");
+}
+
+void EditorSettingsDialog::_refresh_opencode_mcp_session() {
+	OpenCodeMCPServer *mcp_server = OpenCodeMCPServer::get_singleton();
+	if (!mcp_server) {
+		EditorNode::get_log()->add_message("--- OpenCode MCP server plugin is unavailable ---", EditorLog::MSG_TYPE_WARNING);
+		return;
+	}
+
+	mcp_server->refresh_session_metadata();
 }
 
 void EditorSettingsDialog::_update_dynamic_property_hints() {
@@ -993,6 +1015,12 @@ EditorSettingsDialog::EditorSettingsDialog() {
 	advanced_switch->set_pressed(use_advanced);
 	advanced_switch->connect(SceneStringName(toggled), callable_mp(this, &EditorSettingsDialog::_advanced_toggled));
 
+	opencode_mcp_refresh_button = memnew(Button(TTRC("Refresh MCP Session")));
+	opencode_mcp_refresh_button->set_visible(false);
+	opencode_mcp_refresh_button->set_tooltip_text(TTRC("Rewrite OpenCode MCP session metadata now."));
+	opencode_mcp_refresh_button->connect(SceneStringName(pressed), callable_mp(this, &EditorSettingsDialog::_refresh_opencode_mcp_session));
+	hbc->add_child(opencode_mcp_refresh_button);
+
 	inspector = memnew(SectionedInspector);
 	inspector->get_inspector()->set_use_filter(true);
 	inspector->get_inspector()->set_mark_unsaved(false);
@@ -1001,6 +1029,7 @@ EditorSettingsDialog::EditorSettingsDialog() {
 	inspector->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	tab_general->add_child(inspector);
 	inspector->get_inspector()->connect("restart_requested", callable_mp(this, &EditorSettingsDialog::_editor_restart_request));
+	inspector->connect("category_changed", callable_mp(this, &EditorSettingsDialog::_editor_settings_category_changed));
 
 	if (EDITOR_GET("interface/touchscreen/enable_touch_optimizations")) {
 		inspector->set_touch_dragger_enabled(true);

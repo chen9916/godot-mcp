@@ -53,6 +53,7 @@ class EditorSettingsDialog : public AcceptDialog {
 
 	LineEdit *search_box = nullptr;
 	CheckButton *advanced_switch = nullptr;
+	Button *opencode_mcp_refresh_button = nullptr;
 	SectionedInspector *inspector = nullptr;
 	EditorEventSearchBar *shortcut_search_bar = nullptr;
 
@@ -99,6 +100,8 @@ class EditorSettingsDialog : public AcceptDialog {
 	void drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from);
 
 	void _tabs_tab_changed(int p_tab);
+	void _editor_settings_category_changed(const String &p_category);
+	void _refresh_opencode_mcp_session();
 	void _focus_current_search_box();
 
 	void _advanced_toggled(bool p_button_pressed);

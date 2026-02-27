@@ -87,7 +87,7 @@ function _print_help(): void {
 		"  --project-root <path>          Optional project root for session discovery (auto-detected by default).",
 		"  --session-file <path>          Explicit session file path override.",
 		"  --timeout-ms <number>          RPC timeout in milliseconds (default: 10000).",
-		"  --install-opencode-config      Upsert mcp.godot-opencode-test in OpenCode user config and exit.",
+		"  --install-opencode-config      Upsert mcp.godot-opencode in OpenCode user config and exit.",
 		"  --config-path <path>           Optional override for OpenCode config file path.",
 		"  --help                         Show this help text.",
 	].join("\n");
