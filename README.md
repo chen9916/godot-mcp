@@ -1,5 +1,9 @@
 # Godot Engine
 
+> Fork note: This repository tracks Godot plus the OpenCode MCP integration work.
+> MCP docs: [`editor/debugger/opencode_mcp/README.md`](editor/debugger/opencode_mcp/README.md)  
+> Bridge docs: [`misc/opencode_mcp_bridge/README.md`](misc/opencode_mcp_bridge/README.md)
+
 <p align="center">
   <a href="https://godotengine.org">
     <img src="misc/logo/logo_outlined.svg" width="400" alt="Godot Engine logo">
