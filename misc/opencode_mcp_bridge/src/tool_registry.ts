@@ -1,4 +1,4 @@
-export type GodotCapability = "read_scene" | "write_scene" | "read_script" | "write_script" | "save_resource" | "read_resource" | "write_resource" | "read_project" | "write_project";
+export type GodotCapability = "read_scene" | "write_scene" | "read_script" | "write_script" | "save_resource" | "read_resource" | "write_resource" | "read_project" | "write_project" | "read_docs";
 
 export interface ToolDefinition {
 	name: string;
@@ -30,6 +30,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			type: "object",
 			additionalProperties: false,
 			properties: {
+				root_path: COMMON_PATH_SCHEMA,
 				max_depth: { type: "number", minimum: 0 },
 				max_nodes: { type: "number", minimum: 1 },
 			},
@@ -55,31 +56,33 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 		},
 	},
 	{
-		name: "godot.node.get_property",
-		description: "Get one node property value by name.",
-		method: "node.get_property",
+		name: "godot.node.get_properties_batch",
+		description: "Get properties for multiple nodes in one call.",
+		method: "node.get_properties_batch",
 		capability: "read_scene",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
-			required: ["node_path", "property_name"],
+			required: ["items"],
 			properties: {
-				node_path: COMMON_PATH_SCHEMA,
-				property_name: { type: "string", description: "Node property name" },
-			},
-		},
-	},
-	{
-		name: "godot.node.list_properties",
-		description: "List node property names and types.",
-		method: "node.list_properties",
-		capability: "read_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path"],
-			properties: {
-				node_path: COMMON_PATH_SCHEMA,
+				items: {
+					type: "array",
+					minItems: 1,
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["node_path", "property_names"],
+						properties: {
+							item_id: { type: "string" },
+							node_path: COMMON_PATH_SCHEMA,
+							property_names: {
+								type: "array",
+								minItems: 1,
+								items: { type: "string" },
+							},
+						},
+					},
+				},
 			},
 		},
 	},
@@ -102,6 +105,113 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 		},
 	},
 	{
+		name: "godot.node.create_batch",
+		description: "Create multiple nodes with ordered dependencies.",
+		method: "node.create_batch",
+		capability: "write_scene",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["items"],
+			properties: {
+				mode: { type: "string", enum: ["atomic", "best_effort"] },
+				preview_only: { type: "boolean" },
+				items: {
+					type: "array",
+					minItems: 1,
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["item_id", "type"],
+						properties: {
+							item_id: { type: "string" },
+							parent_path: COMMON_PATH_SCHEMA,
+							parent_item_id: { type: "string" },
+							type: { type: "string", description: "Concrete Godot Node class name" },
+							name: { type: "string" },
+							position: { type: "number" },
+							properties: { type: "object", additionalProperties: true },
+							property_entries: {
+								type: "array",
+								description: "Alternative to properties for clients that cannot send free-form maps",
+								items: {
+									type: "object",
+									additionalProperties: false,
+									required: ["name", "value"],
+									properties: {
+										name: { type: "string", description: "Node property name" },
+										value: { description: "Node property value" },
+									},
+								},
+							},
+						},
+						anyOf: [{ required: ["parent_path"] }, { required: ["parent_item_id"] }],
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "godot.node.create_from_template",
+		description: "Create a composite subtree from a template payload.",
+		method: "node.create_from_template",
+		capability: "write_scene",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["parent_path", "root_name", "nodes"],
+			properties: {
+				parent_path: COMMON_PATH_SCHEMA,
+				root_name: { type: "string" },
+				root_type: { type: "string" },
+				mode: { type: "string", enum: ["atomic", "best_effort"] },
+				preview_only: { type: "boolean" },
+				root_properties: { type: "object", additionalProperties: true },
+				root_property_entries: {
+					type: "array",
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["name", "value"],
+						properties: {
+							name: { type: "string" },
+							value: {},
+						},
+					},
+				},
+				nodes: {
+					type: "array",
+					minItems: 1,
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["type"],
+						properties: {
+							item_id: { type: "string" },
+							parent_item_id: { type: "string" },
+							type: { type: "string" },
+							name: { type: "string" },
+							position: { type: "number" },
+							properties: { type: "object", additionalProperties: true },
+							property_entries: {
+								type: "array",
+								items: {
+									type: "object",
+									additionalProperties: false,
+									required: ["name", "value"],
+									properties: {
+										name: { type: "string" },
+										value: {},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	},
+	{
 		name: "godot.node.delete",
 		description: "Delete one node. Requires force=true.",
 		method: "node.delete",
@@ -113,6 +223,109 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			properties: {
 				node_path: COMMON_PATH_SCHEMA,
 				force: { type: "boolean" },
+			},
+		},
+	},
+	{
+		name: "godot.node.delete_batch",
+		description: "Delete multiple nodes with deepest-first ordering.",
+		method: "node.delete_batch",
+		capability: "write_scene",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["items", "force"],
+			properties: {
+				force: { type: "boolean" },
+				mode: { type: "string", enum: ["atomic", "best_effort"] },
+				items: {
+					type: "array",
+					minItems: 1,
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["node_path"],
+						properties: {
+							item_id: { type: "string" },
+							node_path: COMMON_PATH_SCHEMA,
+						},
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "godot.node.duplicate",
+		description: "Duplicate a node and apply optional overrides.",
+		method: "node.duplicate",
+		capability: "write_scene",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["source_path"],
+			properties: {
+				source_path: COMMON_PATH_SCHEMA,
+				parent_path: COMMON_PATH_SCHEMA,
+				new_name: { type: "string" },
+				position: { type: "number" },
+				property_overrides: { type: "object", additionalProperties: true },
+				property_entries: {
+					type: "array",
+					description: "Alternative to property_overrides for deterministic payloads",
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["name", "value"],
+						properties: {
+							name: { type: "string" },
+							value: {},
+						},
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "godot.node.duplicate_batch",
+		description: "Duplicate multiple nodes with ordered dependencies.",
+		method: "node.duplicate_batch",
+		capability: "write_scene",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["items"],
+			properties: {
+				mode: { type: "string", enum: ["atomic", "best_effort"] },
+				items: {
+					type: "array",
+					minItems: 1,
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["item_id", "source_path"],
+						properties: {
+							item_id: { type: "string" },
+							source_path: COMMON_PATH_SCHEMA,
+							parent_path: COMMON_PATH_SCHEMA,
+							parent_item_id: { type: "string" },
+							new_name: { type: "string" },
+							position: { type: "number" },
+							property_overrides: { type: "object", additionalProperties: true },
+							property_entries: {
+								type: "array",
+								items: {
+									type: "object",
+									additionalProperties: false,
+									required: ["name", "value"],
+									properties: {
+										name: { type: "string" },
+										value: {},
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
 	},
@@ -156,6 +369,48 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 							name: { type: "string", description: "Node property name" },
 							value: { description: "Node property value" },
 						},
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "godot.node.set_properties_batch",
+		description: "Set properties on multiple nodes in one call.",
+		method: "node.set_properties_batch",
+		capability: "write_scene",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["items"],
+			properties: {
+				mode: { type: "string", enum: ["atomic", "best_effort"] },
+				items: {
+					type: "array",
+					minItems: 1,
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["node_path"],
+						properties: {
+							item_id: { type: "string" },
+							node_path: COMMON_PATH_SCHEMA,
+							properties: { type: "object", additionalProperties: true },
+							property_entries: {
+								type: "array",
+								description: "Alternative to properties for clients that cannot send free-form maps",
+								items: {
+									type: "object",
+									additionalProperties: false,
+									required: ["name", "value"],
+									properties: {
+										name: { type: "string", description: "Node property name" },
+										value: { description: "Node property value" },
+									},
+								},
+							},
+						},
+						anyOf: [{ required: ["properties"] }, { required: ["property_entries"] }],
 					},
 				},
 			},
@@ -221,10 +476,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 						type: "object",
 						required: ["start_line", "start_col", "end_line", "end_col", "new_text"],
 						properties: {
-							start_line: { type: "number", minimum: 0, description: "Zero-based start line" },
-							start_col: { type: "number", minimum: 0, description: "Zero-based start column" },
-							end_line: { type: "number", minimum: 0, description: "Zero-based end line" },
-							end_col: { type: "number", minimum: 0, description: "Zero-based end column" },
+							start_line: { type: "number" },
+							start_col: { type: "number" },
+							end_line: { type: "number" },
+							end_col: { type: "number" },
 							new_text: { type: "string" },
 						},
 						additionalProperties: false,
@@ -307,153 +562,16 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			},
 		},
 	},
-
-	// -----------------------------------------------------------------------
-	// Scene management tools
-	// -----------------------------------------------------------------------
 	{
-		name: "godot.scene.list",
-		description: "List all .tscn/.scn scene files in the project or a subdirectory.",
-		method: "scene.list",
-		capability: "read_scene",
+		name: "godot.resource.reload",
+		description: "Reload active scene or resource from disk.",
+		method: "resource.reload",
+		capability: "save_resource",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
 			properties: {
-				directory: { type: "string", description: "res:// directory to search (default: res://)" },
-				recursive: { type: "boolean", description: "Search subdirectories (default: true)" },
-			},
-		},
-	},
-	{
-		name: "godot.scene.open",
-		description: "Open a scene by res:// path in the editor (makes it the active edited scene).",
-		method: "scene.open",
-		capability: "write_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["path"],
-			properties: {
-				path: { type: "string", description: "res:// path to a .tscn or .scn file" },
-			},
-		},
-	},
-	{
-		name: "godot.scene.create",
-		description: "Create a new in-memory scene with a specified root node type. Requires resource.save to persist.",
-		method: "scene.create",
-		capability: "write_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["root_type"],
-			properties: {
-				root_type: { type: "string", description: "Class name for the root node (e.g. Node2D, Node3D, Control)" },
-				root_name: { type: "string", description: "Name for the root node (defaults to root_type)" },
-			},
-		},
-	},
-	{
-		name: "godot.scene.instantiate",
-		description: "Instance a packed scene as a child of a node (like adding a prefab).",
-		method: "scene.instantiate",
-		capability: "write_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["scene_path", "parent_path"],
-			properties: {
-				scene_path: { type: "string", description: "res:// path to the .tscn/.scn to instantiate" },
-				parent_path: COMMON_PATH_SCHEMA,
-				name: { type: "string", description: "Override instance name" },
-				position: { type: "number", description: "Child index position (-1 to append)" },
-			},
-		},
-	},
-
-	// -----------------------------------------------------------------------
-	// Node tools
-	// -----------------------------------------------------------------------
-	{
-		name: "godot.node.find",
-		description: "Search nodes by name pattern, type, group, or metadata across the tree.",
-		method: "node.find",
-		capability: "read_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			properties: {
-				pattern: { type: "string", description: "Name pattern with * and ? wildcards (default: *)" },
-				type: { type: "string", description: "Filter by class name" },
-				group: { type: "string", description: "Filter by group membership" },
-				limit: { type: "number", minimum: 1, description: "Max results (default: 100)" },
-				owned: { type: "boolean", description: "Only include nodes owned by the scene root (default: true)" },
-			},
-		},
-	},
-	{
-		name: "godot.node.get_groups",
-		description: "List groups a node belongs to.",
-		method: "node.get_groups",
-		capability: "read_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path"],
-			properties: {
-				node_path: COMMON_PATH_SCHEMA,
-			},
-		},
-	},
-	{
-		name: "godot.node.set_groups",
-		description: "Add/remove a node from groups in one undoable operation.",
-		method: "node.set_groups",
-		capability: "write_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path"],
-			properties: {
-				node_path: COMMON_PATH_SCHEMA,
-				add: { type: "array", items: { type: "string" }, description: "Group names to add" },
-				remove: { type: "array", items: { type: "string" }, description: "Group names to remove" },
-			},
-		},
-	},
-
-	// -----------------------------------------------------------------------
-	// Resource & asset tools
-	// -----------------------------------------------------------------------
-	{
-		name: "godot.resource.get",
-		description: "Inspect any resource's properties (materials, textures, audio, etc.).",
-		method: "resource.get",
-		capability: "read_resource",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["path"],
-			properties: {
-				path: { type: "string", description: "res:// path to the resource" },
-				property_names: { type: "array", items: { type: "string" }, description: "Specific properties to read (omit for all)" },
-			},
-		},
-	},
-	{
-		name: "godot.resource.list",
-		description: "List resources by type or directory.",
-		method: "resource.list",
-		capability: "read_resource",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			properties: {
-				directory: { type: "string", description: "res:// directory to list (default: res://)" },
-				extensions: { type: "array", items: { type: "string" }, description: "File extension filters (e.g. [\"tres\", \"res\", \"png\"])" },
-				recursive: { type: "boolean", description: "Recurse into subdirectories (default: true)" },
-				limit: { type: "number", minimum: 1, description: "Max results (default: 500)" },
+				path: { type: "string", description: "res:// resource path" },
 			},
 		},
 	},
@@ -469,7 +587,20 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			properties: {
 				type: { type: "string", description: "Resource class name (e.g. StyleBoxFlat, ShaderMaterial)" },
 				path: { type: "string", description: "Optional res:// path to assign (does not save to disk)" },
-				properties: { type: "object", additionalProperties: true, description: "Initial flat property values" },
+				properties: { type: "object", additionalProperties: true },
+				property_entries: {
+					type: "array",
+					description: "Alternative to properties for clients that cannot send free-form maps",
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["name", "value"],
+						properties: {
+							name: { type: "string", description: "Resource property name" },
+							value: { description: "Resource property value" },
+						},
+					},
+				},
 			},
 		},
 	},
@@ -481,194 +612,123 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
-			required: ["path", "properties"],
-			properties: {
-				path: { type: "string", description: "res:// path of the resource" },
-				properties: { type: "object", additionalProperties: true, description: "Key-value pairs of property names to new values" },
-			},
-		},
-	},
-
-	// -----------------------------------------------------------------------
-	// Signal & connection tools
-	// -----------------------------------------------------------------------
-	{
-		name: "godot.signal.list",
-		description: "List all signals on a node (built-in and custom from scripts).",
-		method: "signal.list",
-		capability: "read_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path"],
-			properties: {
-				node_path: COMMON_PATH_SCHEMA,
-			},
-		},
-	},
-	{
-		name: "godot.signal.get_connections",
-		description: "Inspect existing signal connections on a node.",
-		method: "signal.get_connections",
-		capability: "read_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path"],
-			properties: {
-				node_path: COMMON_PATH_SCHEMA,
-				signal_name: { type: "string", description: "Filter to connections for this signal only" },
-			},
-		},
-	},
-	{
-		name: "godot.signal.connect",
-		description: "Connect a signal to a method on a target node.",
-		method: "signal.connect",
-		capability: "write_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path", "signal_name", "target_path", "method"],
-			properties: {
-				node_path: { type: "string", description: "Source node (signal emitter)" },
-				signal_name: { type: "string", description: "Signal name on the source node" },
-				target_path: { type: "string", description: "Target node (receiver)" },
-				method: { type: "string", description: "Method name on the target node" },
-				flags: { type: "number", description: "Connection flags bitmask (default: 0)" },
-			},
-		},
-	},
-	{
-		name: "godot.signal.disconnect",
-		description: "Remove a signal connection.",
-		method: "signal.disconnect",
-		capability: "write_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path", "signal_name", "target_path", "method"],
-			properties: {
-				node_path: { type: "string", description: "Source node (signal emitter)" },
-				signal_name: { type: "string", description: "Signal name" },
-				target_path: { type: "string", description: "Target node (receiver)" },
-				method: { type: "string", description: "Method name on the target" },
-			},
-		},
-	},
-
-	// -----------------------------------------------------------------------
-	// Project & editor tools
-	// -----------------------------------------------------------------------
-	{
-		name: "godot.project.get_setting",
-		description: "Read project.godot settings (e.g. window size, main scene).",
-		method: "project.get_setting",
-		capability: "read_project",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["keys"],
-			properties: {
-				keys: { type: "array", minItems: 1, items: { type: "string" }, description: "Setting keys (e.g. application/config/name)" },
-			},
-		},
-	},
-	{
-		name: "godot.project.set_setting",
-		description: "Modify project settings and save to project.godot.",
-		method: "project.set_setting",
-		capability: "write_project",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["settings"],
-			properties: {
-				settings: { type: "object", additionalProperties: true, description: "Key-value pairs of setting paths to new values" },
-			},
-		},
-	},
-	{
-		name: "godot.editor.get_errors",
-		description: "Fetch current errors/warnings from the editor.",
-		method: "editor.get_errors",
-		capability: "read_project",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			properties: {
-				types: { type: "array", items: { type: "string" }, description: "Filter by message type: error, warning (default: both)" },
-				limit: { type: "number", minimum: 1, description: "Max messages to return (default: 50)" },
-				clear: { type: "boolean", description: "Clear the error buffer after reading (default: false)" },
-			},
-		},
-	},
-
-	// -----------------------------------------------------------------------
-	// Shader & visual tools
-	// -----------------------------------------------------------------------
-	{
-		name: "godot.shader.get",
-		description: "Read shader source code from a .gdshader or shader resource.",
-		method: "shader.get",
-		capability: "read_script",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
 			required: ["path"],
 			properties: {
-				path: { type: "string", description: "res:// path to a .gdshader file or shader resource" },
-			},
-		},
-	},
-	{
-		name: "godot.shader.edit",
-		description: "Replace shader source code.",
-		method: "shader.edit",
-		capability: "write_script",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["path", "source"],
-			properties: {
-				path: { type: "string", description: "res:// path to the shader resource" },
-				source: { type: "string", description: "New shader source code" },
-				expected_version: { type: "string", description: "MD5 of current source for conflict detection" },
-			},
-		},
-	},
-	{
-		name: "godot.theme.get_overrides",
-		description: "Inspect theme overrides on a Control node.",
-		method: "theme.get_overrides",
-		capability: "read_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path"],
-			properties: {
-				node_path: COMMON_PATH_SCHEMA,
-				override_type: { type: "string", description: "Filter by type: color, constant, font, font_size, icon, stylebox (omit for all)" },
-			},
-		},
-	},
-	{
-		name: "godot.theme.set_overrides",
-		description: "Apply theme overrides on a Control node. Set value to null to remove an override.",
-		method: "theme.set_overrides",
-		capability: "write_scene",
-		inputSchema: {
-			type: "object",
-			additionalProperties: false,
-			required: ["node_path", "overrides"],
-			properties: {
-				node_path: COMMON_PATH_SCHEMA,
-				overrides: {
-					type: "object",
-					description: "Nested object with categories: colors, constants, font_sizes, fonts, icons, styleboxes",
-					additionalProperties: true,
+				path: { type: "string", description: "res:// path of the resource" },
+				properties: { type: "object", additionalProperties: true },
+				property_entries: {
+					type: "array",
+					description: "Alternative to properties for clients that cannot send free-form maps",
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["name", "value"],
+						properties: {
+							name: { type: "string", description: "Resource property name" },
+							value: { description: "Resource property value" },
+						},
+					},
 				},
 			},
+		},
+	},
+	{
+		name: "godot.docs.class_lookup",
+		description: "Look up class documentation from Godot's runtime docs database.",
+		method: "docs.class_lookup",
+		capability: "read_docs",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["class_name"],
+			properties: {
+				class_name: { type: "string" },
+				version: { type: "string" },
+			},
+		},
+	},
+	{
+		name: "godot.docs.member_lookup",
+		description: "Look up method/property/signal/constant docs for a class member.",
+		method: "docs.member_lookup",
+		capability: "read_docs",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["class_name", "member_name"],
+			properties: {
+				class_name: { type: "string" },
+				member_name: { type: "string" },
+				kind: {
+					type: "string",
+					enum: ["method", "constructor", "operator", "signal", "property", "constant", "annotation", "theme_item", "enum"],
+				},
+				include_inherited: { type: "boolean" },
+				version: { type: "string" },
+			},
+		},
+	},
+	{
+		name: "godot.docs.search",
+		description: "Search classes and members using Godot's help-style matching.",
+		method: "docs.search",
+		capability: "read_docs",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["query"],
+			properties: {
+				query: { type: "string" },
+				version: { type: "string" },
+				limit: { type: "number", minimum: 1 },
+				include_members: { type: "boolean" },
+			},
+		},
+	},
+	{
+		name: "godot.docs.inheritance",
+		description: "Get inheritance chain, descendants, and inherited member summaries.",
+		method: "docs.inheritance",
+		capability: "read_docs",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["class_name"],
+			properties: {
+				class_name: { type: "string" },
+				include_descendants: { type: "boolean" },
+				descendants_limit: { type: "number", minimum: 1 },
+				include_inherited_members: { type: "boolean" },
+				version: { type: "string" },
+			},
+		},
+	},
+	{
+		name: "godot.docs.examples",
+		description: "Get short usage snippets extracted from class/member docs.",
+		method: "docs.examples",
+		capability: "read_docs",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				class_name: { type: "string", description: "Class name. Provide either class_name or topic." },
+				topic: { type: "string", description: "Topic text. Provide either topic or class_name." },
+				language: { type: "string", enum: ["any", "gdscript", "csharp", "text"] },
+				limit: { type: "number", minimum: 1 },
+				version: { type: "string" },
+			},
+		},
+	},
+	{
+		name: "godot.docs.list_versions",
+		description: "List docs versions supported by the running Godot editor.",
+		method: "docs.list_versions",
+		capability: "read_docs",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {},
 		},
 	},
 ];

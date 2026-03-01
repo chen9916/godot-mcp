@@ -14,6 +14,7 @@ export interface SessionCapabilities {
 	write_resource?: boolean;
 	read_project?: boolean;
 	write_project?: boolean;
+	read_docs?: boolean;
 	[key: string]: unknown;
 }
 

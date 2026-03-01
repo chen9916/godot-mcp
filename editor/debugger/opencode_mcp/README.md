@@ -53,15 +53,30 @@ The session file is removed when the server stops.
 
 Capability map:
 
-- `read_scene`: `scene.get_active`, `scene.get_tree`, `scene.list`, `node.get_property`, `node.list_properties`, `node.get_properties`, `node.find`, `node.get_groups`, `signal.list`, `signal.get_connections`, `theme.get_overrides`
-- `write_scene`: `node.create`, `node.delete`, `node.reparent`, `node.set_properties`, `node.set_groups`, `script.attach`, `scene.open`, `scene.create`, `scene.instantiate`, `signal.connect`, `signal.disconnect`, `theme.set_overrides`
+Scene graph:
+
+- `read_scene`: `scene.get_active`, `scene.get_tree`, `scene.list`, `node.get_property`, `node.list_properties`, `node.get_properties`, `node.get_properties_batch`, `node.find`, `node.get_groups`, `signal.list`, `signal.get_connections`, `theme.get_overrides`
+- `write_scene`: `scene.open`, `scene.create`, `scene.instantiate`, `node.create`, `node.create_batch`, `node.create_from_template`, `node.delete`, `node.delete_batch`, `node.duplicate`, `node.duplicate_batch`, `node.reparent`, `node.set_properties`, `node.set_properties_batch`, `node.set_groups`, `signal.connect`, `signal.disconnect`, `theme.set_overrides`, `script.attach_external`, `script.attach_built_in`, `script.attach` (legacy/disabled)
+
+Script and shader:
+
 - `read_script`: `script.get_active`, `script.get`, `shader.get`, `lsp.query`
 - `write_script`: `script.apply_text_edits`, `shader.edit`
-- `save_resource`: `resource.save`
+
+Resources:
+
+- `save_resource`: `resource.save`, `resource.reload`
 - `read_resource`: `resource.get`, `resource.list`
 - `write_resource`: `resource.create`, `resource.set_properties`
+
+Project and editor:
+
 - `read_project`: `project.get_setting`, `editor.get_errors`
 - `write_project`: `project.set_setting`
+
+Documentation:
+
+- `read_docs`: `docs.class_lookup`, `docs.member_lookup`, `docs.search`, `docs.inheritance`, `docs.examples`, `docs.list_versions`
 
 ## Methods (v1)
 
@@ -76,7 +91,7 @@ Capability map:
   - Returns active edited scene identity (name, scene path, root node path, class).
 - `scene.get_tree`
   - Returns bounded tree snapshot from edited scene root.
-  - Optional params: `max_depth` (default `6`), `max_nodes` (default `1500`).
+  - Optional params: `root_path` (default `"."`), `max_depth` (default `6`), `max_nodes` (default `1500`).
 - `scene.list`
   - Lists all `.tscn`/`.scn` files under a directory.
   - Optional params: `directory` (default `res://`), `recursive` (default `true`).
@@ -100,11 +115,20 @@ Capability map:
 - `node.get_properties`
   - Required params: `node_path`, non-empty `property_names` array.
   - Returns a dictionary of requested property values.
-  - Rejects unknown property names and object-typed values that cannot be serialized in JSON.
+  - Rejects unknown property names.
+  - Resource-valued object properties are serialized as `{ "class", "path", "uid" }` when available.
+  - Non-resource object values remain non-serializable and return `INVALID_ARGUMENT`.
+- `node.get_properties_batch`
+  - Required param: non-empty `items` array of `{ node_path, property_names[] }`.
+  - Optional per-item `item_id` is echoed in item results.
+  - Read-only batch operation; returns per-item `ok/data/error` entries.
+  - Resource-valued object properties are serialized as `{ "class", "path", "uid" }` when available.
 - `node.get_property`
   - Required params: `node_path`, `property_name`.
   - Returns one property value with its Variant type name.
-  - Rejects unknown properties and object-typed values that cannot be serialized in JSON.
+  - Rejects unknown properties.
+  - Resource-valued object properties are serialized as `{ "class", "path", "uid" }` when available.
+  - Non-resource object values remain non-serializable and return `INVALID_ARGUMENT`.
 - `node.list_properties`
   - Required param: `node_path`.
   - Returns node property discovery metadata as `{ name, type }` entries.
@@ -112,6 +136,31 @@ Capability map:
 - `node.delete`
   - Required params: `node_path`, `force=true`.
   - Root/internal nodes are rejected.
+- `node.create_batch`
+  - Required params: non-empty `items` array, each with `item_id`, `type`, and exactly one of `parent_path` or `parent_item_id`.
+  - Optional top-level params: `mode` (`atomic` or `best_effort`, default `atomic`), `preview_only` (default `false`).
+  - Optional item params: `name`, `position`, `properties`, `property_entries`.
+  - Items are processed in order. `parent_item_id` can reference a previously successful item in the same batch.
+  - Returns per-item results and aggregate counts (`success_count`, `failure_count`, `skipped_count`).
+- `node.create_from_template`
+  - Syntactic sugar over `node.create_batch` for composite objects.
+  - Required params: `parent_path`, `root_name`, non-empty `nodes` array.
+  - Optional params: `root_type` (default `Node`), `mode`, `preview_only`, root and per-item property payloads.
+  - Returns the same batch response shape as `node.create_batch`.
+- `node.duplicate`
+  - Required param: `source_path`.
+  - Optional params: `parent_path`, `new_name`, `position`, `property_overrides`, `property_entries`.
+  - Duplicates in editor context and applies validated root-node overrides.
+- `node.duplicate_batch`
+  - Required params: non-empty `items` array, each with `item_id` and `source_path`.
+  - Optional top-level param: `mode` (`atomic` or `best_effort`, default `atomic`).
+  - Optional item params: `parent_path`, `parent_item_id`, `new_name`, `position`, `property_overrides`, `property_entries`.
+  - Returns per-item results and aggregate counts.
+- `node.delete_batch`
+  - Required params: non-empty `items` array and `force=true`.
+  - Optional top-level param: `mode` (`atomic` or `best_effort`, default `atomic`).
+  - Optional per-item `item_id` is echoed in item results.
+  - Deletes are applied deepest-first so child nodes are removed before their parents.
 - `node.reparent`
   - Required params: `node_path`, `new_parent_path`.
   - Optional params: `position`, `new_name`.
@@ -119,11 +168,19 @@ Capability map:
   - Required param: `node_path` plus one of:
     - non-empty `properties` dictionary, or
     - non-empty `property_entries` array (`[{ "name": "prop", "value": ... }]`) for clients that cannot send free-form maps.
+  - For `Color` properties, accepts native `Color`, `Color(r,g,b[,a])` string, html hex strings, `[r,g,b[,a]]`, or `{r,g,b[,a]}`.
+  - Invalid color strings fail with `INVALID_ARGUMENT` (no silent fallback).
   - For `Vector3` properties (for example `CSGBox3D.size`), accepts native `Vector3`, `{ "x", "y", "z" }`, or `[x, y, z]` numeric inputs.
   - For `Node3D`, rejects invalid transform writes before applying:
     - `scale` with any zero component,
     - non-invertible `basis` / `global_basis`,
     - `transform` / `global_transform` with non-invertible basis.
+- `node.set_properties_batch`
+  - Required params: non-empty `items` array, each with `node_path` plus one of `properties` or `property_entries`.
+  - Optional top-level param: `mode` (`atomic` or `best_effort`, default `atomic`).
+  - Optional per-item `item_id` is echoed in item results.
+  - Uses the same coercion and validation rules as `node.set_properties`.
+  - Returns per-item `ok/data/error` plus aggregate counts.
 - `node.find`
   - Searches nodes by name pattern, type, group across the edited scene tree.
   - Optional params: `pattern` (default `*`), `type`, `group`, `limit` (default `100`), `owned` (default `true`).
@@ -163,9 +220,24 @@ Capability map:
   - Rejects empty edit arrays and no-op edits (returns conflict when resulting source is unchanged).
   - On success, source is updated in editor state; call `resource.save` to persist to disk.
 - `script.attach`
-  - Accepts optional `workspace` (`auto`, `scene_view`, `script_editor`; default `auto`).
-  - `node_path` defaults to selected scene node when omitted.
-  - `script_path` must be a file-based `res://` script path; in `script_editor` workspace it can be omitted to use the active script tab.
+  - Unified attach entrypoint.
+  - If `built_in` is provided, routes to `script.attach_built_in`.
+  - Otherwise routes to `script.attach_external`.
+  - In `script_editor` workspace, if `script_path` is omitted, it defaults to the active script tab path.
+- `script.attach_external`
+  - Attaches an existing external script file to a node.
+  - Required param: `script_path` (`res://` file path, must not be `::` built-in path).
+  - Optional params: `node_path`, `workspace` (`auto`, `scene_view`, `script_editor`; default `auto`).
+- `script.attach_built_in`
+  - Creates and attaches a built-in script to a node.
+  - Required param: non-empty `built_in` dictionary.
+  - Optional params: `node_path`, `workspace` (`auto`, `scene_view`, `script_editor`; default `auto`).
+  - Refuses replacing an existing external script with a built-in script.
+  - Built-in script attach requires the scene to already be saved.
+  - Returns warning to save the scene with `resource.save` to persist.
+- Editing vs attaching
+  - Use `script.apply_text_edits` to change script source text.
+  - Use `script.attach_external` / `script.attach_built_in` only to change script assignment on a node.
 - `lsp.query`
   - Runs GDScript-aware LSP-style lookups against the current editor script source.
   - Required param: `operation` (`goToDefinition`, `findReferences`, `hover`, `documentSymbol`).
@@ -183,19 +255,34 @@ Capability map:
 - `resource.save`
   - Optional param: `path` (`res://`).
   - If omitted, active scene path is used.
+  - Returns `CONFLICT` if disk contents changed since editor-loaded state; call `resource.reload` first.
+- `resource.reload`
+  - Optional param: `path` (`res://`).
+  - If omitted, active scene path is used.
+  - Reloads scene/resources from disk into editor state.
 - `resource.get`
-  - Inspects a resource's flat (non-Object) properties.
+  - Inspects a resource's serializable properties.
   - Required param: `path`. Optional param: `property_names` (array; omit for all serializable properties).
+  - Resource-valued properties are returned as references: `{ "class", "path", "uid" }` when available.
 - `resource.list`
   - Lists resource files in a directory with optional extension filter.
   - Optional params: `directory` (default `res://`), `extensions` (string array), `recursive` (default `true`), `limit` (default `500`).
 - `resource.create`
   - Creates a new resource in memory by class name.
-  - Required param: `type`. Optional params: `path`, `properties`.
+  - Required param: `type`. Optional params: `path`, `properties`, `property_entries`.
+  - `properties` and `property_entries` are mutually exclusive.
+  - Type coercion accepts deterministic shapes for common types:
+    - `Vector2`/`Vector3`/`Vector4`: native, array, or `{x,y[,z[,w]]}` dictionary.
+    - `Color`: native, `Color(r,g,b[,a])`, html hex string, array, or `{r,g,b[,a]}` dictionary.
+    - Resource refs: `res://`/`uid://` string, `{path}`, `{uid}`, or `null`.
   - Must call `resource.save` to persist.
 - `resource.set_properties`
   - Modifies flat properties on a loaded resource.
-  - Required params: `path`, non-empty `properties` dictionary.
+  - Required param: `path` plus one of:
+    - non-empty `properties` dictionary, or
+    - non-empty `property_entries` array (`[{ "name": "prop", "value": ... }]`).
+  - `properties` and `property_entries` are mutually exclusive.
+  - Uses the same deterministic coercion rules as `resource.create`.
   - Wrapped in undo/redo. Call `resource.save` to persist.
 
 ### Signal operations
@@ -232,6 +319,32 @@ Capability map:
   - Returns recent errors and warnings captured by the error handler.
   - Optional params: `types` (default `["error", "warning"]`), `limit` (default `50`), `clear` (default `false`).
   - Messages include type, text, file, function, line number, and timestamp.
+
+### Documentation
+
+- `docs.list_versions`
+  - Lists docs version aliases accepted by this runtime.
+  - Optional param: `version` (validation-only alias check).
+- `docs.class_lookup`
+  - Returns class docs from Godot's runtime help database (`EditorHelp`/`DocTools`).
+  - Required param: `class_name`. Optional param: `version`.
+  - Includes class payload, inheritance children (`inherited_by`), member counts, and docs URL.
+- `docs.member_lookup`
+  - Returns member details for a class/member pair, with optional inherited lookup.
+  - Required params: `class_name`, `member_name`.
+  - Optional params: `kind` (`method`, `constructor`, `operator`, `signal`, `property`, `constant`, `annotation`, `theme_item`, `enum`), `include_inherited` (default `true`), `version`.
+- `docs.search`
+  - Fuzzy-ish search across classes and members using help-style matching rules.
+  - Required param: `query`.
+  - Optional params: `limit` (default `50`), `include_members` (default `true`), `version`.
+- `docs.inheritance`
+  - Returns parent chain, children/descendants, and inherited member summaries.
+  - Required param: `class_name`.
+  - Optional params: `include_descendants` (default `true`), `descendants_limit` (default `500`), `include_inherited_members` (default `true`), `version`.
+- `docs.examples`
+  - Extracts short code snippets from class/member docs BBCode blocks.
+  - Requires one of: `class_name` or `topic`.
+  - Optional params: `language` (`any`, `gdscript`, `csharp`, `text`; default `any`), `limit` (default `8`), `version`.
 
 ### Shader and theme
 

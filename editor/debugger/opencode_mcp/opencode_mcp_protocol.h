@@ -106,16 +106,26 @@ private:
 	Dictionary _method_node_get_property(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_node_list_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_node_get_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_node_get_properties_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_node_create(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_node_create_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_node_create_from_template(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_node_delete(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_node_delete_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_node_duplicate(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_node_duplicate_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_node_reparent(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_node_set_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_node_set_properties_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_script_get_active(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_script_get(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_script_apply_text_edits(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_script_attach_external(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_script_attach_built_in(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_script_attach(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_lsp_query(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_resource_save(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_resource_reload(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 
 	// Scene management tools.
 	Dictionary _method_scene_list(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
@@ -144,6 +154,14 @@ private:
 	Dictionary _method_project_get_setting(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_project_set_setting(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_editor_get_errors(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+
+	// Docs tools.
+	Dictionary _method_docs_class_lookup(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_docs_member_lookup(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_docs_search(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_docs_inheritance(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_docs_examples(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_docs_list_versions(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 
 	// Shader/theme tools.
 	Dictionary _method_shader_get(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;

@@ -117,6 +117,7 @@ bool OpenCodeMCPServer::_write_session_file() const {
 	session_capabilities["write_resource"] = true;
 	session_capabilities["read_project"] = true;
 	session_capabilities["write_project"] = true;
+	session_capabilities["read_docs"] = true;
 	session["capabilities"] = session_capabilities;
 
 	file->store_string(Variant(session).to_json_string());
@@ -181,6 +182,7 @@ void OpenCodeMCPServer::start() {
 	capabilities["write_resource"] = true;
 	capabilities["read_project"] = true;
 	capabilities["write_project"] = true;
+	capabilities["read_docs"] = true;
 
 	if (protocol.start(0, capabilities) != OK) {
 		EditorNode::get_log()->add_message("--- OpenCode MCP server failed to start ---", EditorLog::MSG_TYPE_ERROR);
