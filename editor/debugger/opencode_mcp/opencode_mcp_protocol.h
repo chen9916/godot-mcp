@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  opencode_mcp_protocol.h                                                */
+/*  opencode_mcp_protocol.h                                               */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -30,12 +30,12 @@
 
 #pragma once
 
-#include "core/typedefs.h"
 #include "core/io/stream_peer_tcp.h"
 #include "core/io/tcp_server.h"
 #include "core/os/os.h"
-#include "core/templates/local_vector.h"
 #include "core/string/ustring.h"
+#include "core/templates/local_vector.h"
+#include "core/typedefs.h"
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 

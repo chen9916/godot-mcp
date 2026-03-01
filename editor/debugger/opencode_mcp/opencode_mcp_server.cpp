@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  opencode_mcp_server.cpp                                                */
+/*  opencode_mcp_server.cpp                                               */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -41,7 +41,7 @@
 namespace {
 constexpr uint64_t SESSION_REFRESH_INTERVAL_SEC = 300;
 constexpr uint64_t SESSION_WRITE_WARNING_COOLDOWN_SEC = 60;
-}
+} //namespace
 
 OpenCodeMCPServer *OpenCodeMCPServer::singleton = nullptr;
 

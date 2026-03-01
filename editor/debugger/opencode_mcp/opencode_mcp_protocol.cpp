@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  opencode_mcp_protocol.cpp                                              */
+/*  opencode_mcp_protocol.cpp                                             */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -35,26 +35,26 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/json.h"
-#include "core/os/keyboard.h"
 #include "core/io/resource.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/io/resource_uid.h"
-#include "core/version.h"
-#include "core/variant/callable.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/object/undo_redo.h"
+#include "core/os/keyboard.h"
 #include "core/templates/vector.h"
+#include "core/variant/callable.h"
+#include "core/version.h"
 #include "editor/doc/editor_help.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
 #include "editor/editor_undo_redo_manager.h"
-#include "editor/settings/project_settings_editor.h"
 #include "editor/script/script_editor_base.h"
 #include "editor/script/script_editor_plugin.h"
+#include "editor/settings/project_settings_editor.h"
 #ifdef MODULE_GDSCRIPT_ENABLED
 #include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/language_server/gdscript_extend_parser.h"
@@ -4143,9 +4143,10 @@ bool OpenCodeMCPProtocol::_apply_text_edits_to_source(const String &p_source, co
 		const int to = _line_col_to_index(p_source, end_line, end_col);
 		if (from < 0 || to < 0 || from > to) {
 			r_error_message = "INVALID_ARGUMENT: invalid edit range at edits[" + itos(i) + "] "
-						  "(start_line=" + itos(start_line) + ", start_col=" + itos(start_col) +
-						  ", end_line=" + itos(end_line) + ", end_col=" + itos(end_col) +
-						  "). Coordinates must be zero-based and within the current source.";
+																						   "(start_line=" +
+					itos(start_line) + ", start_col=" + itos(start_col) +
+					", end_line=" + itos(end_line) + ", end_col=" + itos(end_col) +
+					"). Coordinates must be zero-based and within the current source.";
 			return false;
 		}
 
