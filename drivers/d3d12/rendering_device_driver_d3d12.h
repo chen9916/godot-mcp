@@ -51,6 +51,7 @@ namespace D3D12MA {
 class Allocation;
 class Allocator;
 class VirtualBlock;
+class Pool;
 }; // namespace D3D12MA
 
 struct IDXGIAdapter;
@@ -91,6 +92,10 @@ class RenderingDeviceDriverD3D12 : public RenderingDeviceDriver {
 	struct ShaderCapabilities {
 		D3D_SHADER_MODEL shader_model = (D3D_SHADER_MODEL)0;
 		bool native_16bit_ops = false;
+
+		_FORCE_INLINE_ bool buffer_device_address_supported() const {
+			return shader_model >= D3D_SHADER_MODEL_6_6;
+		}
 	};
 
 	struct FormatCapabilities {
@@ -103,6 +108,8 @@ class RenderingDeviceDriverD3D12 : public RenderingDeviceDriver {
 
 	struct MiscFeaturesSupport {
 		bool depth_bounds_supported = false;
+		bool uma_supported = false;
+		bool gpu_upload_heap_supported = false;
 	};
 
 	struct SamplerCapabilities {
@@ -132,6 +139,7 @@ class RenderingDeviceDriverD3D12 : public RenderingDeviceDriver {
 	struct DescriptorHeap {
 		struct Allocation {
 			uint64_t virtual_alloc_handle = {}; // This is the handle value in "D3D12MA::VirtualAllocation".
+			uint64_t offset = UINT64_MAX;
 			D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {};
 			D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle = {};
 		};
@@ -168,7 +176,11 @@ class RenderingDeviceDriverD3D12 : public RenderingDeviceDriver {
 	};
 
 	DescriptorHeap resource_descriptor_heap;
+	BinaryMutex resource_descriptor_heap_mutex;
+
 	DescriptorHeap sampler_descriptor_heap;
+	BinaryMutex sampler_descriptor_heap_mutex;
+
 	CPUDescriptorHeapPool resource_descriptor_heap_pool;
 	CPUDescriptorHeapPool rtv_descriptor_heap_pool;
 	CPUDescriptorHeapPool dsv_descriptor_heap_pool;
@@ -199,6 +211,11 @@ private:
 	/****************/
 
 	Microsoft::WRL::ComPtr<D3D12MA::Allocator> allocator;
+
+	// These pools allow UPLOAD and READBACK heap types to bypass runtime validation
+	// for GPU features that are supported in practice, such as ALLOW_UNORDERED_ACCESS.
+	Microsoft::WRL::ComPtr<D3D12MA::Pool> custom_upload_pool;
+	Microsoft::WRL::ComPtr<D3D12MA::Pool> custom_readback_pool;
 
 	/******************/
 	/**** RESOURCE ****/
@@ -251,6 +268,7 @@ private:
 		D3D12_GPU_VIRTUAL_ADDRESS gpu_virtual_address = {};
 		DataFormat texel_format = DATA_FORMAT_MAX;
 		uint64_t size = 0;
+		DescriptorHeap::Allocation device_address_uav_alloc = {};
 		struct {
 			bool is_dynamic : 1; // Only used for tracking (e.g. Vulkan needs these checks).
 		} flags = {};
@@ -464,7 +482,7 @@ private:
 		LocalVector<AttachmentLayout> attachment_layouts;
 
 		const VertexFormatInfo *vf_info = nullptr;
-		D3D12_VERTEX_BUFFER_VIEW vertex_buffer_views[8] = {};
+		D3D12_VERTEX_BUFFER_VIEW vertex_buffer_views[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
 		uint32_t vertex_buffer_count = 0;
 	};
 
@@ -551,6 +569,7 @@ public:
 	virtual RenderPassID swap_chain_get_render_pass(SwapChainID p_swap_chain) override;
 	virtual DataFormat swap_chain_get_format(SwapChainID p_swap_chain) override;
 	virtual ColorSpace swap_chain_get_color_space(SwapChainID p_swap_chain) override;
+	virtual bool swap_chain_get_hdr_output_supported(SwapChainID p_swap_chain) override;
 	virtual void swap_chain_free(SwapChainID p_swap_chain) override;
 
 	/*********************/
@@ -664,7 +683,7 @@ private:
 		SamplerDescriptorHeapAllocation *sampler_descriptor_heap_alloc = nullptr;
 
 		struct DynamicBuffer {
-			BufferDynamicInfo const *info = nullptr;
+			const BufferDynamicInfo *info = nullptr;
 			uint32_t binding = UINT_MAX;
 		};
 

@@ -421,14 +421,14 @@ void vertex_shader(in vec3 vertex,
 	vertex = (model_matrix * vec4(vertex, 1.0)).xyz;
 
 #ifdef NORMAL_USED
+	// For correct non-uniform scale handling, normal has to be transformed by normal matrix, but tangent vectors need to use model matrix as is
 	normal_highp = model_normal_matrix * normal_highp;
 #endif
 
 #if defined(TANGENT_USED) || defined(NORMAL_MAP_USED) || defined(BENT_NORMAL_MAP_USED) || defined(LIGHT_ANISOTROPY_USED)
-
-	tangent_highp = model_normal_matrix * tangent_highp;
-	binormal_highp = model_normal_matrix * binormal_highp;
-
+	// For non-uniform scale, this produces non-orthogonal TBNs; ideally binormal should be reconstructed in fragment shader with cross
+	tangent_highp = mat3(model_matrix) * tangent_highp;
+	binormal_highp = mat3(model_matrix) * binormal_highp;
 #endif
 #endif
 
@@ -487,13 +487,14 @@ void vertex_shader(in vec3 vertex,
 	vertex = (modelview * vec4(vertex, 1.0)).xyz;
 
 #ifdef NORMAL_USED
+	// For correct non-uniform scale handling, normal has to be transformed by normal matrix, but tangent vectors need to use model matrix as is
 	normal_highp = modelview_normal * normal_highp;
 #endif
 
 #if defined(TANGENT_USED) || defined(NORMAL_MAP_USED) || defined(BENT_NORMAL_MAP_USED) || defined(LIGHT_ANISOTROPY_USED)
-
-	binormal_highp = modelview_normal * binormal_highp;
-	tangent_highp = modelview_normal * tangent_highp;
+	// For non-uniform scale, this produces non-orthogonal TBNs; ideally binormal should be reconstructed in fragment shader with cross
+	tangent_highp = mat3(modelview) * tangent_highp;
+	binormal_highp = mat3(modelview) * binormal_highp;
 #endif
 #endif // !defined(SKIP_TRANSFORM_USED) && !defined(VERTEX_WORLD_COORDS_USED)
 
@@ -513,8 +514,7 @@ void vertex_shader(in vec3 vertex,
 
 	vertex_interp = vertex;
 
-	// Normalize TBN vectors before interpolation, per MikkTSpace.
-	// See: http://www.mikktspace.com/
+	// Normalize TBN vectors to account for model/normal transforms that may have scale
 #ifdef NORMAL_USED
 	normal_interp = hvec3(normalize(normal_highp));
 #endif
@@ -1542,9 +1542,9 @@ void main() {
 		if (decals.data[decal_index].emission_rect != vec4(0.0)) {
 			//emission is additive, so its independent from albedo
 			if (sc_decal_use_mipmaps()) {
-				emission += hvec3(textureGrad(sampler2D(decal_atlas_srgb, decal_sampler), uv_local.xz * decals.data[decal_index].emission_rect.zw + decals.data[decal_index].emission_rect.xy, ddx * decals.data[decal_index].emission_rect.zw, ddy * decals.data[decal_index].emission_rect.zw).xyz * decals.data[decal_index].emission_energy * fade);
+				emission += hvec3(textureGrad(sampler2D(decal_atlas_srgb, decal_sampler), uv_local.xz * decals.data[decal_index].emission_rect.zw + decals.data[decal_index].emission_rect.xy, ddx * decals.data[decal_index].emission_rect.zw, ddy * decals.data[decal_index].emission_rect.zw).xyz * decals.data[decal_index].modulate.rgb * decals.data[decal_index].emission_energy * fade);
 			} else {
-				emission += hvec3(textureLod(sampler2D(decal_atlas_srgb, decal_sampler), uv_local.xz * decals.data[decal_index].emission_rect.zw + decals.data[decal_index].emission_rect.xy, 0.0).xyz * decals.data[decal_index].emission_energy * fade);
+				emission += hvec3(textureLod(sampler2D(decal_atlas_srgb, decal_sampler), uv_local.xz * decals.data[decal_index].emission_rect.zw + decals.data[decal_index].emission_rect.xy, 0.0).xyz * decals.data[decal_index].modulate.rgb * decals.data[decal_index].emission_energy * fade);
 			}
 		}
 	}
@@ -1742,13 +1742,68 @@ void main() {
 				lm_light_l1p1 = hvec3((textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw + vec3(0.0, 0.0, 3.0), 0.0).rgb - vec3(0.5)) * 2.0);
 			}
 
-			hvec3 n = hvec3(normalize(lightmaps.data[ofs].normal_xform * indirect_normal));
+			mat3 normal_xform = mat3(lightmaps.data[ofs].normal_xform_and_specular_intensity);
+			hvec3 n = hvec3(normalize(normal_xform * indirect_normal));
 			half exposure_normalization = half(lightmaps.data[ofs].exposure_normalization);
 
-			ambient_light += lm_light_l0 * exposure_normalization;
-			ambient_light += lm_light_l1n1 * n.y * lm_light_l0 * exposure_normalization * half(4.0);
-			ambient_light += lm_light_l1_0 * n.z * lm_light_l0 * exposure_normalization * half(4.0);
-			ambient_light += lm_light_l1p1 * n.x * lm_light_l0 * exposure_normalization * half(4.0);
+			hvec3 sh_light = lm_light_l0;
+			sh_light += lm_light_l1n1 * n.y * lm_light_l0 * half(4.0);
+			sh_light += lm_light_l1_0 * n.z * lm_light_l0 * half(4.0);
+			sh_light += lm_light_l1p1 * n.x * lm_light_l0 * half(4.0);
+			sh_light *= exposure_normalization;
+			ambient_light += sh_light;
+
+			if (sc_use_lightmap_specular()) {
+				// Fake specular light to create some direct light specular lobes for directional lightmaps.
+				// https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/gdc2018-precomputedgiobalilluminationinfrostbite.pdf (slides 66-71)
+				const vec3 luminance_weights = vec3(0.2126, 0.7152, 0.0722);
+				vec3 l1 = vec3(
+						dot(vec3(lm_light_l0 * lm_light_l1p1), luminance_weights),
+						dot(vec3(lm_light_l0 * lm_light_l1n1), luminance_weights),
+						dot(vec3(lm_light_l0 * lm_light_l1_0), luminance_weights));
+				float l1_len = length(l1);
+				float l0_luminance = dot(vec3(lm_light_l0), luminance_weights);
+
+				if (l1_len > 1e-5 && l0_luminance > 1e-5) {
+					vec3 lightmap_direction = l1 / l1_len;
+					vec3 L_view_highp = normalize(lightmap_direction * normal_xform);
+					float NdotL = max(dot(vec3(normal), L_view_highp), 0.0);
+
+					if (NdotL > 1e-4) {
+						vec3 specular_lightmap_normal = normalize(normal_xform * vec3(normal));
+						vec3 specular_irradiance = vec3(lm_light_l0);
+						specular_irradiance += vec3(lm_light_l0 * lm_light_l1n1) * specular_lightmap_normal.y * 4.0;
+						specular_irradiance += vec3(lm_light_l0 * lm_light_l1_0) * specular_lightmap_normal.z * 4.0;
+						specular_irradiance += vec3(lm_light_l0 * lm_light_l1p1) * specular_lightmap_normal.x * 4.0;
+						specular_irradiance *= lightmaps.data[ofs].exposure_normalization;
+						hvec3 specular_light_color = hvec3(max(specular_irradiance, vec3(0.0)) / max(NdotL, 0.1));
+
+						hvec3 f0 = F0(metallic, specular, albedo);
+
+						hvec3 diffuse_light_discarded = diffuse_light;
+						float directionality = clamp(l1_len / l0_luminance, 0.0, 1.0);
+						float specular_intensity = directionality * lightmaps.data[ofs].normal_xform_and_specular_intensity[0][3] * 2.0;
+
+						light_compute(normal, hvec3(L_view_highp), view, saturateHalf(0.0), specular_light_color, true, half(1.0), f0, roughness, metallic, half(specular_intensity), albedo, alpha,
+								screen_uv, hvec3(1.0),
+#ifdef LIGHT_BACKLIGHT_USED
+								backlight,
+#endif
+#ifdef LIGHT_RIM_USED
+								rim, rim_tint,
+#endif
+#ifdef LIGHT_CLEARCOAT_USED
+								clearcoat, clearcoat_roughness, geo_normal,
+#endif
+#ifdef LIGHT_ANISOTROPY_USED
+								binormal, tangent, anisotropy,
+#endif
+								diffuse_light_discarded,
+								direct_specular_light);
+					}
+				}
+			}
+
 		} else {
 			if (sc_use_lightmap_bicubic_filter()) {
 				ambient_light += hvec3(textureArray_bicubic(lightmap_textures[ofs], uvw, lightmaps.data[ofs].light_texture_size).rgb * lightmaps.data[ofs].exposure_normalization);
@@ -1769,7 +1824,7 @@ void main() {
 		hvec4 reflection_accum = hvec4(0.0);
 		hvec4 ambient_accum = hvec4(0.0);
 #ifdef LIGHT_CLEARCOAT_USED
-		hvec3 cc_reflection_accum = hvec3(0.0);
+		hvec4 cc_reflection_accum = hvec4(0.0);
 #endif
 
 #ifdef LIGHT_ANISOTROPY_USED
@@ -1792,13 +1847,19 @@ void main() {
 				break;
 			}
 
+#ifndef LIGHT_CLEARCOAT_USED
 			if (reflection_accum.a >= half(1.0) && ambient_accum.a >= half(1.0)) {
 				break;
 			}
+#else
+			if (reflection_accum.a >= half(1.0) && cc_reflection_accum.a >= half(1.0) && ambient_accum.a >= half(1.0)) {
+				break;
+			}
+#endif // LIGHT_CLEARCOAT_USED
 
-			reflection_process(reflection_index, vertex, ref_vec, normal, roughness, ambient_light, indirect_specular_light,
+			reflection_process(reflection_index, vertex, ref_vec, normal, roughness, ambient_light,
 #ifdef LIGHT_CLEARCOAT_USED
-					cc_specular_light, cc_ref_vec, mix(half(0.001), half(0.1), clearcoat_roughness), cc_reflection_accum,
+					cc_ref_vec, mix(half(0.001), half(0.1), clearcoat_roughness), cc_reflection_accum,
 #endif
 					ambient_accum, reflection_accum);
 		}
@@ -1811,12 +1872,21 @@ void main() {
 			reflection_accum.rgb = indirect_specular_light * (half(1.0) - reflection_accum.a) + reflection_accum.rgb;
 		}
 
+#ifdef LIGHT_CLEARCOAT_USED
+		if (cc_reflection_accum.a < half(1.0)) {
+			cc_reflection_accum.rgb = cc_specular_light * (half(1.0) - reflection_accum.a) + cc_reflection_accum.rgb;
+		}
+#endif
+
 		if (reflection_accum.a > half(0.0)) {
 			indirect_specular_light = reflection_accum.rgb;
-#ifdef LIGHT_CLEARCOAT_USED
-			cc_specular_light = cc_reflection_accum.rgb;
-#endif
 		}
+
+#ifdef LIGHT_CLEARCOAT_USED
+		if (cc_reflection_accum.a > half(0.0)) {
+			cc_specular_light = cc_reflection_accum.rgb;
+		}
+#endif
 
 #if !defined(USE_LIGHTMAP)
 		if (ambient_accum.a > half(0.0)) {
@@ -1966,10 +2036,10 @@ void main() {
 					hvec3 light_dir = hvec3(directional_lights.data[i].direction);
 					hvec3 base_normal_bias = geo_normal * (half(1.0) - max(half(0.0), dot(light_dir, -geo_normal)));
 
-#define BIAS_FUNC(m_var, m_idx)                                                                        \
+#define BIAS_FUNC(m_var, m_idx) \
 	hvec3 normal_bias = base_normal_bias * half(directional_lights.data[i].shadow_normal_bias[m_idx]); \
-	normal_bias -= light_dir * dot(light_dir, normal_bias);                                            \
-	normal_bias += light_dir * half(directional_lights.data[i].shadow_bias[m_idx]);                    \
+	normal_bias -= light_dir * dot(light_dir, normal_bias); \
+	normal_bias += light_dir * half(directional_lights.data[i].shadow_bias[m_idx]); \
 	m_var.xyz += vec3(normal_bias);
 
 					if (depth_z < directional_lights.data[i].shadow_split_offsets.x) {

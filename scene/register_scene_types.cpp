@@ -113,8 +113,11 @@
 #include "scene/main/window.h"
 #include "scene/resources/animation_library.h"
 #include "scene/resources/atlas_texture.h"
-#include "scene/resources/audio_stream_polyphonic.h"
-#include "scene/resources/audio_stream_wav.h"
+#include "scene/resources/audio/audio_stream.h"
+#include "scene/resources/audio/audio_stream_microphone.h"
+#include "scene/resources/audio/audio_stream_polyphonic.h"
+#include "scene/resources/audio/audio_stream_randomizer.h"
+#include "scene/resources/audio/audio_stream_wav.h"
 #include "scene/resources/bit_map.h"
 #include "scene/resources/blit_material.h"
 #include "scene/resources/bone_map.h"
@@ -142,6 +145,7 @@
 #if !defined(NAVIGATION_2D_DISABLED) || !defined(NAVIGATION_3D_DISABLED)
 #include "scene/resources/navigation_mesh.h"
 #endif // !defined(NAVIGATION_2D_DISABLED) || !defined(NAVIGATION_3D_DISABLED)
+#include "scene/resources/audio/audio_stream_generator.h"
 #include "scene/resources/dpi_texture.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/resources/particle_process_material.h"
@@ -195,7 +199,6 @@
 #include "scene/2d/remote_transform_2d.h"
 #include "scene/2d/skeleton_2d.h"
 #include "scene/2d/sprite_2d.h"
-#include "scene/2d/tile_map_layer.h"
 #include "scene/2d/visible_on_screen_notifier_2d.h"
 #include "scene/resources/2d/polygon_path_finder.h"
 #include "scene/resources/2d/skeleton/skeleton_modification_2d.h"
@@ -205,12 +208,10 @@
 #include "scene/resources/2d/skeleton/skeleton_modification_2d_stackholder.h"
 #include "scene/resources/2d/skeleton/skeleton_modification_2d_twoboneik.h"
 #include "scene/resources/2d/skeleton/skeleton_modification_stack_2d.h"
-#include "scene/resources/2d/tile_set.h"
 #include "scene/resources/world_2d.h"
 #ifndef DISABLE_DEPRECATED
 #include "scene/2d/parallax_background.h"
 #include "scene/2d/parallax_layer.h"
-#include "scene/2d/tile_map.h"
 #endif
 
 #ifndef NAVIGATION_2D_DISABLED
@@ -249,6 +250,7 @@
 #include "scene/3d/lightmap_gi.h"
 #include "scene/3d/lightmap_probe.h"
 #include "scene/3d/limit_angular_velocity_modifier_3d.h"
+#include "scene/3d/line_3d.h"
 #include "scene/3d/look_at_modifier_3d.h"
 #include "scene/3d/marker_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
@@ -269,6 +271,7 @@
 #include "scene/3d/spring_bone_collision_sphere_3d.h"
 #include "scene/3d/spring_bone_simulator_3d.h"
 #include "scene/3d/sprite_3d.h"
+#include "scene/3d/trail_3d.h"
 #include "scene/3d/two_bone_ik_3d.h"
 #include "scene/3d/visible_on_screen_notifier_3d.h"
 #include "scene/3d/voxel_gi.h"
@@ -337,6 +340,7 @@
 #endif // PHYSICS_2D_DISABLED
 
 #ifndef PHYSICS_3D_DISABLED
+#include "scene/3d/bone_spreader_3d.h"
 #include "scene/3d/physics/animatable_body_3d.h"
 #include "scene/3d/physics/area_3d.h"
 #include "scene/3d/physics/character_body_3d.h"
@@ -593,10 +597,12 @@ void register_scene_types() {
 	GDREGISTER_CLASS(AnimationPlayer);
 	GDREGISTER_CLASS(AnimationTree);
 	GDREGISTER_CLASS(AnimationNode);
+	GDREGISTER_ABSTRACT_CLASS(AnimationNodeObserver);
 	GDREGISTER_CLASS(AnimationRootNode);
 	GDREGISTER_CLASS(AnimationNodeBlendTree);
 	GDREGISTER_CLASS(AnimationNodeBlendSpace1D);
 	GDREGISTER_CLASS(AnimationNodeBlendSpace2D);
+	GDREGISTER_CLASS(AnimationNodeObserverBlendSpace);
 	GDREGISTER_CLASS(AnimationNodeStateMachine);
 	GDREGISTER_CLASS(AnimationNodeStateMachinePlayback);
 	GDREGISTER_VIRTUAL_CLASS(AnimationNodeExtension);
@@ -605,6 +611,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(AnimationNodeStateMachineTransition);
 	GDREGISTER_CLASS(AnimationNodeOutput);
 	GDREGISTER_CLASS(AnimationNodeOneShot);
+	GDREGISTER_CLASS(AnimationNodeObserverOneShot);
 	GDREGISTER_CLASS(AnimationNodeAnimation);
 	GDREGISTER_CLASS(AnimationNodeAdd2);
 	GDREGISTER_CLASS(AnimationNodeAdd3);
@@ -614,6 +621,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(AnimationNodeTimeScale);
 	GDREGISTER_CLASS(AnimationNodeTimeSeek);
 	GDREGISTER_CLASS(AnimationNodeTransition);
+	GDREGISTER_CLASS(AnimationNodeObserverTransition);
 
 	GDREGISTER_CLASS(ShaderGlobalsOverride); // can be used in any shader
 
@@ -661,6 +669,10 @@ void register_scene_types() {
 	GDREGISTER_CLASS(LightmapGIData);
 	GDREGISTER_CLASS(LightmapProbe);
 	GDREGISTER_ABSTRACT_CLASS(Lightmapper);
+
+	GDREGISTER_CLASS(Line3D);
+	GDREGISTER_CLASS(Trail3D);
+
 	GDREGISTER_CLASS(GPUParticles3D);
 	GDREGISTER_ABSTRACT_CLASS(GPUParticlesCollision3D);
 	GDREGISTER_CLASS(GPUParticlesCollisionBox3D);
@@ -675,7 +687,6 @@ void register_scene_types() {
 	GDREGISTER_CLASS(Marker3D);
 	GDREGISTER_CLASS(RootMotionView);
 	GDREGISTER_VIRTUAL_CLASS(SkeletonModifier3D);
-	GDREGISTER_CLASS(ModifierBoneTarget3D);
 	GDREGISTER_CLASS(RetargetModifier3D);
 	GDREGISTER_VIRTUAL_CLASS(JointLimitation3D);
 	GDREGISTER_CLASS(JointLimitationCone3D);
@@ -698,6 +709,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(JacobianIK3D);
 	GDREGISTER_CLASS(LimitAngularVelocityModifier3D);
 	GDREGISTER_CLASS(BoneTwistDisperser3D);
+	GDREGISTER_CLASS(ModifierBoneTarget3D);
 
 #ifndef XR_DISABLED
 	GDREGISTER_CLASS(XRCamera3D);
@@ -727,6 +739,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(SoftBody3D);
 #endif // PHYSICS_3D_DISABLED
 
+	GDREGISTER_CLASS(BoneSpreader3D);
 	GDREGISTER_CLASS(BoneAttachment3D);
 	GDREGISTER_CLASS(LookAtModifier3D);
 #ifndef DISABLE_DEPRECATED
@@ -838,20 +851,12 @@ void register_scene_types() {
 	GDREGISTER_CLASS(DampedSpringJoint2D);
 	GDREGISTER_CLASS(TouchScreenButton);
 #endif // PHYSICS_2D_DISABLED
-	GDREGISTER_CLASS(TileSet);
-	GDREGISTER_ABSTRACT_CLASS(TileSetSource);
-	GDREGISTER_CLASS(TileSetAtlasSource);
-	GDREGISTER_CLASS(TileSetScenesCollectionSource);
-	GDREGISTER_CLASS(TileMapPattern);
-	GDREGISTER_CLASS(TileData);
-	GDREGISTER_CLASS(TileMapLayer);
 	GDREGISTER_CLASS(Parallax2D);
 	GDREGISTER_CLASS(RemoteTransform2D);
 
 #ifndef DISABLE_DEPRECATED
 	GDREGISTER_CLASS(ParallaxBackground);
 	GDREGISTER_CLASS(ParallaxLayer);
-	GDREGISTER_CLASS(TileMap);
 #endif
 
 	GDREGISTER_CLASS(SkeletonModificationStack2D);
@@ -1016,9 +1021,16 @@ void register_scene_types() {
 
 	OS::get_singleton()->yield(); // may take time to init
 
+	GDREGISTER_CLASS(AudioStream);
+	GDREGISTER_CLASS(AudioStreamPlayback);
+	GDREGISTER_VIRTUAL_CLASS(AudioStreamPlaybackResampled);
 	GDREGISTER_CLASS(AudioStreamPlayer);
 	GDREGISTER_CLASS(AudioStreamWAV);
+	GDREGISTER_CLASS(AudioStreamMicrophone);
 	GDREGISTER_CLASS(AudioStreamPolyphonic);
+	GDREGISTER_CLASS(AudioStreamRandomizer);
+	GDREGISTER_CLASS(AudioStreamGenerator);
+	GDREGISTER_ABSTRACT_CLASS(AudioStreamGeneratorPlayback);
 	GDREGISTER_ABSTRACT_CLASS(AudioStreamPlaybackPolyphonic);
 
 	OS::get_singleton()->yield(); // may take time to init
@@ -1060,10 +1072,6 @@ void register_scene_types() {
 	MultiMeshInstance2D::navmesh_parse_init();
 	NavigationObstacle2D::navmesh_parse_init();
 	Polygon2D::navmesh_parse_init();
-#ifndef DISABLE_DEPRECATED
-	TileMap::navmesh_parse_init();
-#endif
-	TileMapLayer::navmesh_parse_init();
 #ifndef PHYSICS_2D_DISABLED
 	StaticBody2D::navmesh_parse_init();
 #endif // PHYSICS_2D_DISABLED
@@ -1310,6 +1318,9 @@ void register_scene_types() {
 		// RenderingServer needs to exist for this to succeed.
 		ColorPickerShape::init_shaders();
 		GraphEdit::init_shaders();
+#ifndef _3D_DISABLED
+		Trail3D::init_shaders();
+#endif //_3D_DISABLED
 	}
 
 	SceneDebugger::initialize();
@@ -1366,6 +1377,7 @@ void unregister_scene_types() {
 	PanoramaSkyMaterial::cleanup_shader();
 	ProceduralSkyMaterial::cleanup_shader();
 	FogMaterial::cleanup_shader();
+	Trail3D::finish_shaders();
 #endif // _3D_DISABLED
 
 	ParticleProcessMaterial::finish_shaders();
