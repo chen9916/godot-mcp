@@ -41,6 +41,8 @@ class OpenCodeMCPServer : public EditorPlugin {
 	OpenCodeMCPProtocol protocol;
 
 	bool started = false;
+	String session_id;
+	uint64_t started_at_unix = 0;
 	uint64_t last_session_write_unix = 0;
 	uint64_t last_session_write_warning_unix = 0;
 

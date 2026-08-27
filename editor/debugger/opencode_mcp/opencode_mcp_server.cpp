@@ -31,8 +31,10 @@
 #include "opencode_mcp_server.h"
 
 #include "core/config/project_settings.h"
+#include "core/crypto/crypto_core.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/os/os.h"
 #include "editor/editor_log.h"
 #include "editor/editor_node.h"
@@ -41,7 +43,45 @@
 namespace {
 constexpr uint64_t SESSION_REFRESH_INTERVAL_SEC = 300;
 constexpr uint64_t SESSION_WRITE_WARNING_COOLDOWN_SEC = 60;
-} //namespace
+
+static Dictionary _make_capabilities() {
+	Dictionary capabilities;
+	capabilities["read_scene"] = true;
+	capabilities["write_scene"] = true;
+	capabilities["read_script"] = true;
+	capabilities["write_script"] = true;
+	capabilities["save_resource"] = true;
+	capabilities["read_resource"] = true;
+	capabilities["write_resource"] = true;
+	capabilities["read_project"] = true;
+	capabilities["write_project"] = true;
+	capabilities["read_docs"] = true;
+	capabilities["script_validation"] = true;
+	capabilities["filesystem_sync"] = true;
+	capabilities["resource_versioning"] = true;
+	capabilities["runtime_control"] = true;
+	capabilities["runtime_inspection"] = true;
+	capabilities["viewport_capture"] = true;
+	capabilities["diagnostics_v2"] = true;
+	capabilities["partial_batch_results"] = true;
+	return capabilities;
+}
+
+static String _generate_session_id() {
+	uint8_t bytes[16];
+	if (CryptoCore::generate_random(bytes, 16) == OK) {
+		// RFC 4122 version 4 / variant 1 bits make logs and tooling recognize the
+		// value as a UUID while uniqueness comes from the platform RNG.
+		bytes[6] = (bytes[6] & 0x0f) | 0x40;
+		bytes[8] = (bytes[8] & 0x3f) | 0x80;
+		const String hex = String::hex_encode_buffer(bytes, 16);
+		return hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" + hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" + hex.substr(20, 12);
+	}
+
+	return (itos(OS::get_singleton()->get_process_id()) + ":" +
+			uitos(OS::get_singleton()->get_ticks_usec())).md5_text();
+}
+} // namespace
 
 OpenCodeMCPServer *OpenCodeMCPServer::singleton = nullptr;
 
@@ -104,21 +144,15 @@ bool OpenCodeMCPServer::_write_session_file() const {
 	}
 
 	Dictionary session;
+	session["session_id"] = session_id;
+	session["protocol_version"] = 2;
+	session["state"] = "connected";
 	session["port"] = protocol.get_port();
 	session["pid"] = OS::get_singleton()->get_process_id();
+	session["project_path"] = ProjectSettings::get_singleton()->get_resource_path();
+	session["started_at"] = (int64_t)started_at_unix;
 	session["expires_at"] = OS::get_singleton()->get_unix_time() + 3600;
-	Dictionary session_capabilities;
-	session_capabilities["read_scene"] = true;
-	session_capabilities["write_scene"] = true;
-	session_capabilities["read_script"] = true;
-	session_capabilities["write_script"] = true;
-	session_capabilities["save_resource"] = true;
-	session_capabilities["read_resource"] = true;
-	session_capabilities["write_resource"] = true;
-	session_capabilities["read_project"] = true;
-	session_capabilities["write_project"] = true;
-	session_capabilities["read_docs"] = true;
-	session["capabilities"] = session_capabilities;
+	session["capabilities"] = _make_capabilities();
 
 	file->store_string(Variant(session).to_json_string());
 	return true;
@@ -126,7 +160,22 @@ bool OpenCodeMCPServer::_write_session_file() const {
 
 void OpenCodeMCPServer::_remove_session_file() const {
 	const String session_file = _session_file_path();
-	if (FileAccess::exists(session_file)) {
+	if (!FileAccess::exists(session_file)) {
+		return;
+	}
+
+	// An older editor may finish shutting down after its replacement has
+	// already registered. Never delete another process's session metadata.
+	Ref<FileAccess> file = FileAccess::open(session_file, FileAccess::READ);
+	if (file.is_null()) {
+		return;
+	}
+	JSON json;
+	if (json.parse(file->get_as_text()) != OK || json.get_data().get_type() != Variant::DICTIONARY) {
+		return;
+	}
+	const Dictionary current = json.get_data();
+	if (String(current.get("session_id", String())) == session_id) {
 		DirAccess::remove_absolute(ProjectSettings::get_singleton()->globalize_path(session_file));
 	}
 }
@@ -172,19 +221,13 @@ void OpenCodeMCPServer::start() {
 		return;
 	}
 
-	Dictionary capabilities;
-	capabilities["read_scene"] = true;
-	capabilities["write_scene"] = true;
-	capabilities["read_script"] = true;
-	capabilities["write_script"] = true;
-	capabilities["save_resource"] = true;
-	capabilities["read_resource"] = true;
-	capabilities["write_resource"] = true;
-	capabilities["read_project"] = true;
-	capabilities["write_project"] = true;
-	capabilities["read_docs"] = true;
+	const Dictionary capabilities = _make_capabilities();
 
-	if (protocol.start(0, capabilities) != OK) {
+	session_id = _generate_session_id();
+	started_at_unix = OS::get_singleton()->get_unix_time();
+	if (protocol.start(0, capabilities, session_id) != OK) {
+		session_id.clear();
+		started_at_unix = 0;
 		EditorNode::get_log()->add_message("--- OpenCode MCP server failed to start ---", EditorLog::MSG_TYPE_ERROR);
 		return;
 	}
@@ -206,13 +249,14 @@ void OpenCodeMCPServer::stop() {
 		return;
 	}
 
+	_remove_session_file();
 	protocol.stop();
 	started = false;
+	session_id.clear();
+	started_at_unix = 0;
 	last_session_write_unix = 0;
 	last_session_write_warning_unix = 0;
 	set_process_internal(false);
-	_remove_session_file();
-
 	EditorNode::get_log()->add_message("--- OpenCode MCP server stopped ---", EditorLog::MSG_TYPE_EDITOR);
 }
 

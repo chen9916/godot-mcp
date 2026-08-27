@@ -5,9 +5,11 @@ This package exposes a local MCP stdio server for OpenCode and forwards tool cal
 ## What it does
 
 - Reads Godot session metadata from `.godot/opencode_mcp/session.json`.
-- Connects to `127.0.0.1:<session-port>` and forwards tool calls to Godot JSON-RPC.
+- Verifies the editor PID/session UUID, reconnects to replacement editors with bounded backoff, and forwards tool calls to localhost JSON-RPC.
 - Exposes `godot.*` MCP tools for scene/node/script/resource operations.
 - Can install a local OpenCode MCP config entry.
+
+See the Godot-side [v2 tool contract](../../editor/debugger/opencode_mcp/AUTOMATION_TOOLS_V2.md) and [architecture](../../editor/debugger/opencode_mcp/ARCHITECTURE.md).
 
 ## Tool mapping
 
@@ -39,6 +41,7 @@ This package exposes a local MCP stdio server for OpenCode and forwards tool cal
 - `godot.script.get_active` -> `script.get_active`
 - `godot.script.get` -> `script.get`
 - `godot.script.apply_text_edits` -> `script.apply_text_edits`
+- `godot.script.validate` -> `script.validate`
 - `godot.lsp` -> `lsp.query`
 - `godot.script.attach` -> `script.attach`
 - `godot.shader.get` -> `shader.get`
@@ -49,6 +52,10 @@ This package exposes a local MCP stdio server for OpenCode and forwards tool cal
 - `godot.resource.list` -> `resource.list`
 - `godot.resource.create` -> `resource.create`
 - `godot.resource.set_properties` -> `resource.set_properties`
+- `godot.resource.import` -> `resource.import`
+- `godot.resource.status` -> `resource.status`
+- `godot.filesystem.scan` -> `filesystem.scan`
+- `godot.filesystem.wait` -> `filesystem.wait`
 - `godot.signal.list` -> `signal.list`
 - `godot.signal.get_connections` -> `signal.get_connections`
 - `godot.signal.connect` -> `signal.connect`
@@ -56,6 +63,7 @@ This package exposes a local MCP stdio server for OpenCode and forwards tool cal
 - `godot.project.get_setting` -> `project.get_setting`
 - `godot.project.set_setting` -> `project.set_setting`
 - `godot.editor.get_errors` -> `editor.get_errors`
+- `godot.diagnostics.get` -> `diagnostics.get`
 - `godot.theme.get_overrides` -> `theme.get_overrides`
 - `godot.theme.set_overrides` -> `theme.set_overrides`
 - `godot.docs.class_lookup` -> `docs.class_lookup`
@@ -64,8 +72,21 @@ This package exposes a local MCP stdio server for OpenCode and forwards tool cal
 - `godot.docs.inheritance` -> `docs.inheritance`
 - `godot.docs.examples` -> `docs.examples`
 - `godot.docs.list_versions` -> `docs.list_versions`
+- `godot.runtime.start` -> `runtime.start`
+- `godot.runtime.stop` -> `runtime.stop`
+- `godot.runtime.status` -> `runtime.status`
+- `godot.runtime.pause` -> `runtime.pause`
+- `godot.runtime.resume` -> `runtime.resume`
+- `godot.runtime.advance_frames` -> `runtime.advance_frames`
+- `godot.runtime.get_tree` -> `runtime.get_tree`
+- `godot.runtime.get_property` -> `runtime.get_property`
+- `godot.runtime.set_property` -> `runtime.set_property`
+- `godot.runtime.call` -> `runtime.call`
+- `godot.runtime.input_action` -> `runtime.input_action`
+- `godot.runtime.input_event` -> `runtime.input_event`
+- `godot.runtime.capture_viewport` -> `runtime.capture_viewport`
 
-`godot.session.info` returns the active Godot-side session metadata, transport details, and advertised capabilities.
+`godot.session.info` returns bridge state (`disconnected`, `reconnecting`, `connected`, or `failed`) together with active Godot metadata and advertised capabilities. It remains callable while the editor is restarting.
 `godot.scene.list_open` returns open scene tabs, the active tab index, and scene paths for scene-pinned workflows.
 `godot.scene.get_tree` accepts optional `root_path` to inspect a subtree directly.
 `godot.scene.list` scans `res://` directories for `.tscn` and `.scn` files.
@@ -89,6 +110,12 @@ Scene-relative tools accept optional `expected_scene_path` and return conflict i
 Typed coercion accepts vectors (array/dict), colors (`Color(r,g,b[,a])`/hex/array/dict), and resource refs (`res://`, `uid://`, `{path}`, `{uid}`, or `null`).
 `godot.resource.get` inspects serializable properties on loaded resources, and `godot.resource.list` scans project resources with extension filters.
 `godot.resource.save` returns conflict if disk state diverged; use `godot.resource.reload` to sync from disk before saving.
+`godot.resource.reload` preserves unsaved buffers, performs optimistic version checks, and reports disk/buffer/cache versions.
+`godot.script.validate` validates disk or supplied unsaved source without opening a scene or starting a game.
+`godot.filesystem.scan`, `godot.filesystem.wait`, and `godot.resource.import` synchronize newly-created files (including SVGs) without restarting the editor.
+`godot.resource.status` explains cache, buffer, importer, dependency, UID, and active-scene state.
+Runtime tools require an owned `run_id`; the bridge polls bounded asynchronous operations with a stable deduplication ID.
+`godot.diagnostics.get` uses session/run IDs and sequence filters instead of destructive global clearing.
 After successful script or resource edits, call `godot.resource.save` to persist changes to disk.
 `godot.signal.*` tools inspect and mutate node signal wiring.
 `godot.project.get_setting`, `godot.project.set_setting`, and `godot.editor.get_errors` expose project configuration and recent editor diagnostics.
@@ -107,6 +134,14 @@ Docs tools read from Godot's runtime help database, so built-in and indexed scri
 - `read_project`: `opencode.session.info`, `project.get_setting`, `editor.get_errors`
 - `write_project`: `project.set_setting`
 - `read_docs`: `docs.class_lookup`, `docs.member_lookup`, `docs.search`, `docs.inheritance`, `docs.examples`, `docs.list_versions`
+- `script_validation`: `script.validate`
+- `filesystem_sync`: `filesystem.scan`, `filesystem.wait`, `resource.import`
+- `resource_versioning`: `resource.status`
+- `runtime_control`: `runtime.start`, `runtime.stop`, `runtime.status`, `runtime.pause`, `runtime.resume`, `runtime.advance_frames`
+- `runtime_inspection`: `runtime.get_tree`, `runtime.get_property`, `runtime.set_property`, `runtime.call`, `runtime.input_action`, `runtime.input_event`
+- `viewport_capture`: `runtime.capture_viewport`
+- `diagnostics_v2`: `diagnostics.get`
+- `partial_batch_results`: partial setting/node/resource reads
 
 ## Prerequisites
 
@@ -119,8 +154,11 @@ Docs tools read from Godot's runtime help database, so built-in and indexed scri
 ```bash
 npm ci
 npm run typecheck
+npm test
 npm run build
 ```
+
+The default suite includes unit and localhost transport integration tests. See [test/README.md](test/README.md) for the gated live-Godot workflow and regression matrix.
 
 ## Run bridge manually
 
@@ -180,7 +218,11 @@ The installer is idempotent and creates a timestamped backup before writing.
 - `SESSION_ERROR: Session metadata is expired`
   - Restart or toggle the MCP setting in the editor.
 - `TRANSPORT_ERROR: Could not connect`
-  - Confirm the editor is running and `session.json` port matches the active session.
+  - The bridge retries with bounded backoff. Confirm a replacement editor is running and owns the UUID/port in `session.json`.
+- `STALE_SESSION`
+  - The endpoint and session file identify different editor processes. Wait for session discovery to settle; do not reuse editor object state.
+- `STALE_RUN`
+  - Start a new runtime and use its returned `run_id`; runtime identities never survive a new run or editor session.
 
 ## Security notes
 

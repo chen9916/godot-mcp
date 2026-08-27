@@ -15,13 +15,25 @@ export interface SessionCapabilities {
 	read_project?: boolean;
 	write_project?: boolean;
 	read_docs?: boolean;
+	script_validation?: boolean;
+	filesystem_sync?: boolean;
+	resource_versioning?: boolean;
+	runtime_control?: boolean;
+	runtime_inspection?: boolean;
+	viewport_capture?: boolean;
+	diagnostics_v2?: boolean;
+	partial_batch_results?: boolean;
 	[key: string]: unknown;
 }
 
 export interface SessionData {
+	session_id?: string;
+	protocol_version?: number;
 	port: number;
 	token?: string;
 	pid: number;
+	project_path?: string;
+	started_at?: number;
 	expires_at?: number;
 	capabilities: SessionCapabilities;
 }
@@ -32,10 +44,23 @@ export interface SessionLoadOptions {
 	now_unix?: number;
 }
 
+export type SessionErrorCode =
+	| "SESSION_NOT_FOUND"
+	| "SESSION_INVALID"
+	| "SESSION_EXPIRED"
+	| "SESSION_PROCESS_EXITED";
+
 export class SessionError extends Error {
-	constructor(p_message: string) {
+	readonly code: SessionErrorCode;
+	readonly retryable: boolean;
+	readonly session_file?: string;
+
+	constructor(p_code: SessionErrorCode, p_message: string, p_retryable: boolean, p_session_file?: string) {
 		super(p_message);
 		this.name = "SessionError";
+		this.code = p_code;
+		this.retryable = p_retryable;
+		this.session_file = p_session_file;
 	}
 }
 
@@ -64,24 +89,24 @@ function _is_process_alive(p_pid: number): boolean {
 
 function _ensure_object(p_value: unknown, p_name: string): Record<string, unknown> {
 	if (!p_value || typeof p_value !== "object" || Array.isArray(p_value)) {
-		throw new SessionError(`${p_name} must be an object.`);
+		throw new SessionError("SESSION_INVALID", `${p_name} must be an object.`, true);
 	}
 	return p_value as Record<string, unknown>;
 }
 
 function _to_integer(p_value: unknown, p_name: string): number {
 	if (typeof p_value !== "number" || !Number.isInteger(p_value)) {
-		throw new SessionError(`${p_name} must be an integer.`);
+		throw new SessionError("SESSION_INVALID", `${p_name} must be an integer.`, true);
 	}
 	return p_value;
 }
 
 function _to_unix_seconds(p_value: unknown, p_name: string): number {
 	if (typeof p_value !== "number" || !Number.isFinite(p_value)) {
-		throw new SessionError(`${p_name} must be a number.`);
+		throw new SessionError("SESSION_INVALID", `${p_name} must be a number.`, true);
 	}
 	if (p_value <= 0) {
-		throw new SessionError(`${p_name} must be greater than 0.`);
+		throw new SessionError("SESSION_INVALID", `${p_name} must be greater than 0.`, true);
 	}
 
 	// Godot may serialize unix time with sub-second precision.
@@ -201,35 +226,64 @@ export function load_session(p_options: SessionLoadOptions = {}): SessionData {
 
 	if (!fs.existsSync(session_file)) {
 		throw new SessionError(
+			"SESSION_NOT_FOUND",
 			`Session file not found at '${session_file}'. Start Godot editor and enable network/opencode_mcp/enabled.`,
+			true,
+			session_file,
 		);
 	}
 
-	const raw = fs.readFileSync(session_file, "utf8");
+	let raw = "";
+	try {
+		raw = fs.readFileSync(session_file, "utf8");
+	} catch (error: unknown) {
+		throw new SessionError(
+			"SESSION_INVALID",
+			`Session file could not be read: '${session_file}'. ${String(error)}`,
+			true,
+			session_file,
+		);
+	}
 	let decoded: unknown;
 	try {
 		decoded = JSON.parse(raw);
 	} catch {
-		throw new SessionError(`Session file is not valid JSON: '${session_file}'.`);
+		throw new SessionError("SESSION_INVALID", `Session file is not valid JSON: '${session_file}'.`, true, session_file);
 	}
 
 	const root = _ensure_object(decoded, "Session payload");
 	const port = _to_integer(root.port, "port");
 	if (port <= 0 || port > 65535) {
-		throw new SessionError("Session port must be in range 1..65535.");
+		throw new SessionError("SESSION_INVALID", "Session port must be in range 1..65535.", true, session_file);
+	}
+
+	let session_id: string | undefined;
+	if (root.session_id !== undefined) {
+		if (typeof root.session_id !== "string" || root.session_id.length === 0) {
+			throw new SessionError("SESSION_INVALID", "session_id must be a non-empty string.", true, session_file);
+		}
+		session_id = root.session_id;
+	}
+
+	let protocol_version: number | undefined;
+	if (root.protocol_version !== undefined) {
+		protocol_version = _to_integer(root.protocol_version, "protocol_version");
+		if (protocol_version < 1) {
+			throw new SessionError("SESSION_INVALID", "protocol_version must be >= 1.", true, session_file);
+		}
 	}
 
 	let token: string | undefined;
 	if (root.token !== undefined) {
 		if (typeof root.token !== "string" || root.token.length === 0) {
-			throw new SessionError("Session token must be a non-empty string.");
+			throw new SessionError("SESSION_INVALID", "Session token must be a non-empty string.", true, session_file);
 		}
 		token = root.token;
 	}
 
 	const pid = _to_integer(root.pid, "pid");
 	if (!_is_process_alive(pid)) {
-		throw new SessionError("Session process is no longer running. Restart Godot editor.");
+		throw new SessionError("SESSION_PROCESS_EXITED", "Session process is no longer running; waiting for a replacement Godot editor.", true, session_file);
 	}
 
 	const capabilities = _ensure_object(root.capabilities, "capabilities") as SessionCapabilities;
@@ -239,17 +293,40 @@ export function load_session(p_options: SessionLoadOptions = {}): SessionData {
 		expires_at = _to_unix_seconds(root.expires_at, "expires_at");
 		const now_unix = p_options.now_unix ?? _default_now_unix();
 		if (expires_at <= now_unix) {
-			throw new SessionError("Session metadata is expired. Use Editor Settings > network/opencode_mcp > Refresh MCP Session, or toggle MCP enabled.");
+			throw new SessionError("SESSION_EXPIRED", "Session metadata is expired; waiting for Godot to refresh or replace it.", true, session_file);
 		}
 	}
 
+	let project_path: string | undefined;
+	if (root.project_path !== undefined) {
+		if (typeof root.project_path !== "string" || root.project_path.length === 0) {
+			throw new SessionError("SESSION_INVALID", "project_path must be a non-empty string.", true, session_file);
+		}
+		project_path = root.project_path;
+	}
+
+	let started_at: number | undefined;
+	if (root.started_at !== undefined) {
+		started_at = _to_unix_seconds(root.started_at, "started_at");
+	}
+
 	return {
+		session_id,
+		protocol_version,
 		port,
 		token,
 		pid,
+		project_path,
+		started_at,
 		expires_at,
 		capabilities,
 	};
+}
+
+export function get_session_identity(p_session: SessionData): string {
+	// Protocol v2 editors always provide a UUID. The legacy fallback keeps older
+	// editor builds usable, but cannot protect against PID and port reuse.
+	return p_session.session_id ?? `legacy:${p_session.pid}:${p_session.port}`;
 }
 
 export function session_has_capability(p_session: SessionData, p_capability: GodotCapability): boolean {

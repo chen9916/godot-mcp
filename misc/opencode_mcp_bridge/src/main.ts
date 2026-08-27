@@ -4,11 +4,13 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { as_error_text, map_godot_error_message } from "./error_map.js";
+import { as_error_text } from "./error_map.js";
 import { install_opencode_config } from "./opencode_user_config.js";
-import { GodotRpcClient, RpcMethodError, RpcTransportError } from "./rpc_client.js";
-import { load_session, SessionError, session_has_capability } from "./session.js";
-import { get_tool_definition, get_tool_list_for_mcp } from "./tool_registry.js";
+import { is_async_runtime_method, wait_for_filesystem, wait_for_runtime_operation } from "./operation_waiter.js";
+import { to_mcp_error, to_structured_error } from "./protocol_error.js";
+import { session_has_capability } from "./session.js";
+import { SessionLifecycle } from "./session_lifecycle.js";
+import { get_tool_definition, get_tool_list_for_mcp, is_tool_retry_safe } from "./tool_registry.js";
 
 interface CliOptions {
 	project_root?: string;
@@ -104,13 +106,6 @@ function _to_mcp_success(p_payload: unknown): Record<string, unknown> {
 	};
 }
 
-function _to_mcp_error(p_message: string): Record<string, unknown> {
-	return {
-		content: [{ type: "text", text: p_message }],
-		isError: true,
-	};
-}
-
 async function _run_config_install(p_options: CliOptions): Promise<void> {
 	const bridge_script_path = path.resolve(process.argv[1]);
 	const result = await install_opencode_config({
@@ -144,20 +139,11 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 		},
 	);
 
-	let rpc_client: GodotRpcClient | null = null;
-
-	const get_rpc_client = async (p_port: number): Promise<GodotRpcClient> => {
-		if (!rpc_client || rpc_client.get_port() !== p_port) {
-			if (rpc_client) {
-				await rpc_client.close();
-			}
-			rpc_client = new GodotRpcClient({
-				port: p_port,
-				timeout_ms: p_options.timeout_ms,
-			});
-		}
-		return rpc_client;
-	};
+	const lifecycle = new SessionLifecycle({
+		project_root: p_options.project_root,
+		session_file: p_options.session_file,
+		timeout_ms: p_options.timeout_ms,
+	});
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
 		return {
@@ -169,12 +155,22 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 		const tool_name = p_request.params.name;
 		const tool = get_tool_definition(tool_name);
 		if (!tool) {
-			return _to_mcp_error(`Unknown tool: ${tool_name}`);
+			return to_mcp_error({
+				code: "METHOD_NOT_FOUND",
+				message: `Unknown tool: ${tool_name}`,
+				operation: tool_name,
+				retryable: false,
+			});
 		}
 
 		const args_variant = p_request.params.arguments ?? {};
 		if (!args_variant || typeof args_variant !== "object" || Array.isArray(args_variant)) {
-			return _to_mcp_error("INVALID_ARGUMENT: Tool arguments must be an object.");
+			return to_mcp_error({
+				code: "INVALID_ARGUMENT",
+				message: "Tool arguments must be an object.",
+				operation: tool.method,
+				retryable: false,
+			});
 		}
 
 		const args = { ...(args_variant as Record<string, unknown>) };
@@ -182,34 +178,63 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 		delete args._token;
 
 		try {
-			const session = load_session({
-				project_root: p_options.project_root,
-				session_file: p_options.session_file,
-			});
+			if (tool.method === "opencode.session.info") {
+				try {
+					await lifecycle.refresh();
+					const editor = await lifecycle.call(tool.method, args, { retry_safe: true });
+					return _to_mcp_success({
+						ok: true,
+						data: {
+							bridge: lifecycle.get_info(),
+							editor,
+						},
+						warnings: [],
+					});
+				} catch (error: unknown) {
+					return _to_mcp_success({
+						ok: true,
+						data: {
+							bridge: lifecycle.get_info(),
+							editor: null,
+						},
+						warnings: [to_structured_error(error, tool.method)],
+					});
+				}
+			}
+
+			await lifecycle.refresh();
+			const session = lifecycle.get_active_session();
+			if (!session) {
+				throw new Error("Session lifecycle reported connected without active session metadata.");
+			}
 
 			if (!session_has_capability(session, tool.capability)) {
-				return _to_mcp_error(`CAPABILITY_DENIED: ${tool.capability} is disabled by current Godot session.`);
+				return to_mcp_error({
+					code: "CAPABILITY_DENIED",
+					message: `${tool.capability} is disabled by current Godot session.`,
+					operation: tool.method,
+					session_id: session.session_id,
+					run_id: typeof args.run_id === "string" ? args.run_id : undefined,
+					retryable: false,
+				});
 			}
 
 			if (session.token) {
 				args.token = session.token;
 			}
 
-			const client = await get_rpc_client(session.port);
-			const result = await client.call(tool.method, args);
+			const result = tool.method === "filesystem.wait"
+				? await wait_for_filesystem(lifecycle, args)
+				: is_async_runtime_method(tool.method)
+					? await wait_for_runtime_operation(lifecycle, tool.method, args)
+					: await lifecycle.call(tool.method, args, { retry_safe: is_tool_retry_safe(tool) });
 			return _to_mcp_success(result);
 		} catch (error: unknown) {
-			if (error instanceof SessionError) {
-				return _to_mcp_error(`SESSION_ERROR: ${error.message}`);
-			}
-			if (error instanceof RpcMethodError) {
-				return _to_mcp_error(map_godot_error_message({ code: error.code, message: error.message, data: error.data }));
-			}
-			if (error instanceof RpcTransportError) {
-				return _to_mcp_error(`TRANSPORT_ERROR: ${error.message}`);
-			}
-
-			return _to_mcp_error(`INTERNAL: ${as_error_text(error)}`);
+			const session = lifecycle.get_active_session();
+			return to_mcp_error(to_structured_error(error, tool.method, {
+				session_id: session?.session_id,
+				run_id: typeof args.run_id === "string" ? args.run_id : undefined,
+			}));
 		}
 	});
 
@@ -217,9 +242,7 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 	await server.connect(transport);
 
 	const shutdown = async (): Promise<void> => {
-		if (rpc_client) {
-			await rpc_client.close();
-		}
+		await lifecycle.close();
 		process.exit(0);
 	};
 

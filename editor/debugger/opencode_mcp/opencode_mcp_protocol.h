@@ -30,6 +30,14 @@
 
 #pragma once
 
+#include "opencode_mcp_diagnostics_store.h"
+#include "opencode_mcp_error.h"
+#include "opencode_mcp_filesystem_sync.h"
+#include "opencode_mcp_resource_versioning.h"
+#include "opencode_mcp_runtime_controller.h"
+#include "opencode_mcp_script_validation.h"
+#include "opencode_mcp_viewport_capture.h"
+
 #include "core/io/stream_peer_tcp.h"
 #include "core/io/tcp_server.h"
 #include "core/os/os.h"
@@ -49,11 +57,15 @@ class ScriptEditorBase;
 class OpenCodeMCPProtocol {
 public:
 	enum ErrorCode {
-		ERROR_CAPABILITY_DENIED = -32002,
-		ERROR_INVALID_ARGUMENT = -32003,
-		ERROR_CONFLICT = -32004,
-		ERROR_NOT_FOUND = -32005,
-		ERROR_INTERNAL = -32006,
+		ERROR_CAPABILITY_DENIED = OpenCodeMCPError::CAPABILITY_DENIED,
+		ERROR_INVALID_ARGUMENT = OpenCodeMCPError::INVALID_ARGUMENT,
+		ERROR_CONFLICT = OpenCodeMCPError::CONFLICT,
+		ERROR_NOT_FOUND = OpenCodeMCPError::NOT_FOUND,
+		ERROR_INTERNAL = OpenCodeMCPError::INTERNAL,
+		ERROR_DISCONNECTED = OpenCodeMCPError::DISCONNECTED,
+		ERROR_TIMEOUT = OpenCodeMCPError::TIMEOUT,
+		ERROR_STALE_SESSION = OpenCodeMCPError::STALE_SESSION,
+		ERROR_STALE_RUN = OpenCodeMCPError::STALE_RUN,
 	};
 
 private:
@@ -62,28 +74,24 @@ private:
 		String read_buffer;
 	};
 
-	struct LogEntry {
-		String type;
-		String text;
-		String file;
-		String function;
-		int line = 0;
-		uint64_t timestamp = 0;
-	};
-
 	static constexpr int MAX_REQUEST_BYTES = 1024 * 1024;
-	static constexpr int MAX_LOG_ENTRIES = 200;
 
 	Ref<TCPServer> server;
 	LocalVector<Client> clients;
 
 	int remote_port = 0;
 	bool started = false;
+	String session_id;
+	String current_operation;
 	Dictionary capabilities;
+	Dictionary method_error_details;
 
-	LocalVector<LogEntry> log_ring_buffer;
-	int log_ring_write_pos = 0;
-	int log_ring_count = 0;
+	OpenCodeMCPDiagnosticsStore diagnostics_store;
+	OpenCodeMCPFilesystemSync filesystem_sync;
+	OpenCodeMCPResourceVersioning resource_versioning;
+	OpenCodeMCPRuntimeController runtime_controller;
+	OpenCodeMCPScriptValidation script_validation;
+	OpenCodeMCPViewportCapture viewport_capture;
 	ErrorHandlerList error_handler;
 
 	static void _error_handler_callback(void *p_user_data, const char *p_function,
@@ -95,7 +103,11 @@ private:
 
 	Dictionary _make_response(const Variant &p_result, const Variant &p_id) const;
 	Dictionary _make_ok(const Variant &p_data = Variant(), const Array &p_warnings = Array()) const;
-	Dictionary _make_error_response(int p_error_code, const String &p_error_message, const Variant &p_id) const;
+	Dictionary _make_error_response(int p_error_code, const String &p_error_message, const Variant &p_id,
+			const String &p_operation = String(), const String &p_run_id = String(),
+			const Dictionary &p_details = Dictionary()) const;
+	Dictionary _make_batch_item_error(int p_index, const String &p_item_id, int p_error_code,
+			const String &p_error_message, const String &p_status = "failed") const;
 
 	Dictionary _process_request_line(const String &p_line);
 	Dictionary _dispatch_method(const String &p_method, const Dictionary &p_params, int &r_error_code, String &r_error_message);
@@ -121,12 +133,25 @@ private:
 	Dictionary _method_script_get_active(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_script_get(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_script_apply_text_edits(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_script_validate(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_script_attach_external(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_script_attach_built_in(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_script_attach(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_lsp_query(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_resource_save(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_resource_reload(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_filesystem_scan(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_filesystem_wait(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_resource_import(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_resource_status(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_runtime_start(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_runtime_stop(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_runtime_status(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_runtime_pause(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_runtime_resume(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_runtime_advance_frames(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_runtime_request(const String &p_operation, const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_runtime_capture_viewport(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 
 	// Scene management tools.
 	Dictionary _method_scene_list(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
@@ -155,6 +180,7 @@ private:
 	Dictionary _method_project_get_setting(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_project_set_setting(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_editor_get_errors(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Dictionary _method_diagnostics_get(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 
 	// Docs tools.
 	Dictionary _method_docs_class_lookup(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
@@ -194,10 +220,11 @@ private:
 	static bool _apply_text_edits_to_source(const String &p_source, const Array &p_edits, String &r_updated_source, String &r_error_message);
 
 public:
-	Error start(int p_requested_port, const Dictionary &p_capabilities);
+	Error start(int p_requested_port, const Dictionary &p_capabilities, const String &p_session_id);
 	void stop();
 	void poll();
 
 	bool is_started() const { return started; }
 	int get_port() const { return remote_port; }
+	const String &get_session_id() const { return session_id; }
 };

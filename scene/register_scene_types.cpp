@@ -47,6 +47,9 @@
 #include "scene/animation/tween.h"
 #include "scene/audio/audio_stream_player.h"
 #include "scene/debugger/scene_debugger.h"
+#ifdef DEBUG_ENABLED
+#include "scene/debugger/opencode_mcp_runtime_debugger.h"
+#endif
 #include "scene/gui/aspect_ratio_container.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
@@ -1324,6 +1327,9 @@ void register_scene_types() {
 	}
 
 	SceneDebugger::initialize();
+#ifdef DEBUG_ENABLED
+	OpenCodeMCPRuntimeDebugger::initialize();
+#endif
 
 	OS::get_singleton()->benchmark_end_measure("Scene", "Register Types");
 }
@@ -1331,6 +1337,9 @@ void register_scene_types() {
 void unregister_scene_types() {
 	OS::get_singleton()->benchmark_begin_measure("Scene", "Unregister Types");
 
+#ifdef DEBUG_ENABLED
+	OpenCodeMCPRuntimeDebugger::deinitialize();
+#endif
 	SceneDebugger::deinitialize();
 
 	if constexpr (GD_IS_CLASS_ENABLED(TextureLayered)) {

@@ -1,10 +1,29 @@
-export type GodotCapability = "read_scene" | "write_scene" | "read_script" | "write_script" | "save_resource" | "read_resource" | "write_resource" | "read_project" | "write_project" | "read_docs";
+export type GodotCapability =
+	| "read_scene"
+	| "write_scene"
+	| "read_script"
+	| "write_script"
+	| "save_resource"
+	| "read_resource"
+	| "write_resource"
+	| "read_project"
+	| "write_project"
+	| "read_docs"
+	| "script_validation"
+	| "filesystem_sync"
+	| "resource_versioning"
+	| "runtime_control"
+	| "runtime_inspection"
+	| "viewport_capture"
+	| "diagnostics_v2"
+	| "partial_batch_results";
 
 export interface ToolDefinition {
 	name: string;
 	description: string;
 	method: string;
 	capability: GodotCapability;
+	retrySafe?: boolean;
 	inputSchema: Record<string, unknown>;
 }
 
@@ -51,8 +70,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			properties: {
 				expected_scene_path: EXPECTED_SCENE_PATH_SCHEMA,
 				root_path: COMMON_PATH_SCHEMA,
-				max_depth: { type: "number", minimum: 0 },
-				max_nodes: { type: "number", minimum: 1 },
+				max_depth: { type: "integer", minimum: 0 },
+				max_nodes: { type: "integer", minimum: 1 },
 			},
 		},
 	},
@@ -160,6 +179,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			properties: {
 				expected_scene_path: EXPECTED_SCENE_PATH_SCHEMA,
 				node_path: COMMON_PATH_SCHEMA,
+				atomic: { type: "boolean", description: "Fail the whole read when any property cannot be returned" },
 				property_names: {
 					type: "array",
 					minItems: 1,
@@ -179,6 +199,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			required: ["items"],
 			properties: {
 				expected_scene_path: EXPECTED_SCENE_PATH_SCHEMA,
+				atomic: { type: "boolean", description: "Fail the whole read when any requested property cannot be returned" },
 				items: {
 					type: "array",
 					minItems: 1,
@@ -773,7 +794,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 	},
 	{
 		name: "godot.resource.reload",
-		description: "Reload active scene or resource from disk.",
+		description: "Reload a scene, script, or resource from disk without overwriting an unsaved editor buffer.",
 		method: "resource.reload",
 		capability: "save_resource",
 		inputSchema: {
@@ -782,6 +803,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			properties: {
 				expected_scene_path: EXPECTED_SCENE_PATH_SCHEMA,
 				path: { type: "string", description: "res:// resource path" },
+				expected_version: { type: "string", description: "Expected MD5 of the file on disk" },
 			},
 		},
 	},
@@ -796,6 +818,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			required: ["path"],
 			properties: {
 				path: { type: "string", description: "res:// resource path" },
+				atomic: { type: "boolean", description: "Fail the whole read when any property cannot be returned" },
 				property_names: {
 					type: "array",
 					items: { type: "string" },
@@ -956,6 +979,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			required: ["keys"],
 			properties: {
 				keys: { type: "array", minItems: 1, items: { type: "string" } },
+				atomic: { type: "boolean", description: "Fail the whole read if any key is missing (default: false)" },
 			},
 		},
 	},
@@ -984,7 +1008,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			properties: {
 				types: { type: "array", items: { type: "string", enum: ["error", "warning"] } },
 				limit: { type: "number", minimum: 1 },
+				after_sequence: { type: "number", minimum: 0 },
 				clear: { type: "boolean" },
+				confirm_clear: { type: "boolean", description: "Required with clear=true" },
 			},
 		},
 	},
@@ -1122,6 +1148,270 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			properties: {},
 		},
 	},
+	{
+		name: "godot.script.validate",
+		description: "Validate disk or unsaved script source without opening a scene, changing tabs, or running the project.",
+		method: "script.validate",
+		capability: "script_validation",
+		retrySafe: true,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["script_path"],
+			properties: {
+				script_path: { type: "string", description: "External res:// script path" },
+				source: { type: "string", description: "Optional unsaved editor-buffer source" },
+				expected_version: { type: "string", description: "Expected MD5 of the selected source" },
+				validate_dependencies: { type: "boolean" },
+			},
+		},
+	},
+	{
+		name: "godot.filesystem.scan",
+		description: "Start an asynchronous Godot editor filesystem scan and return its scan ID.",
+		method: "filesystem.scan",
+		capability: "filesystem_sync",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: { full: { type: "boolean", description: "Run a full scan instead of scanning changes" } },
+		},
+	},
+	{
+		name: "godot.filesystem.wait",
+		description: "Wait for the editor filesystem scanner and importer to become idle, with a bounded timeout.",
+		method: "filesystem.wait",
+		capability: "filesystem_sync",
+		retrySafe: true,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				scan_id: { type: "string" },
+				timeout_ms: { type: "integer", minimum: 100, maximum: 60000 },
+			},
+		},
+	},
+	{
+		name: "godot.resource.import",
+		description: "Synchronize and import one or up to 64 resources, returning a result for every path and loadability diagnostics.",
+		method: "resource.import",
+		capability: "filesystem_sync",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				path: { type: "string" },
+				paths: { type: "array", minItems: 1, maxItems: 64, items: { type: "string" } },
+				atomic: { type: "boolean" },
+			},
+			oneOf: [{ required: ["path"] }, { required: ["paths"] }],
+		},
+	},
+	{
+		name: "godot.resource.status",
+		description: "Compare resource UID, disk, editor-buffer, loaded-cache, importer, dependency, and active-scene state.",
+		method: "resource.status",
+		capability: "resource_versioning",
+		retrySafe: true,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["path"],
+			properties: {
+				path: { type: "string", description: "External res:// resource path" },
+				load: { type: "boolean", description: "Load the resource when it is not already cached" },
+			},
+		},
+	},
+	{
+		name: "godot.runtime.start",
+		description: "Start one MCP-owned project or scene runtime and return a unique run ID.",
+		method: "runtime.start",
+		capability: "runtime_control",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				mode: { type: "string", enum: ["main", "current", "scene"] },
+				scene_path: { type: "string", description: "Required for mode=scene" },
+				headless: { type: "boolean" },
+				allow_unsaved: { type: "boolean", description: "Permit Godot's normal autosave-before-run behavior" },
+			},
+		},
+	},
+	{
+		name: "godot.runtime.stop",
+		description: "Stop only the MCP-owned runtime identified by run_id.",
+		method: "runtime.stop",
+		capability: "runtime_control",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["run_id", "confirm"],
+			properties: {
+				run_id: { type: "string" },
+				confirm: { type: "boolean", description: "Must be true" },
+			},
+		},
+	},
+	{
+		name: "godot.runtime.status",
+		description: "Get the state, debugger connection, process ID, frame counters, and exit code for an MCP-owned runtime.",
+		method: "runtime.status",
+		capability: "runtime_control",
+		retrySafe: true,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: { run_id: { type: "string" } },
+		},
+	},
+	{
+		name: "godot.runtime.pause",
+		description: "Pause an MCP-owned connected runtime.",
+		method: "runtime.pause",
+		capability: "runtime_control",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id"], properties: { run_id: { type: "string" } },
+		},
+	},
+	{
+		name: "godot.runtime.resume",
+		description: "Resume an MCP-owned paused runtime.",
+		method: "runtime.resume",
+		capability: "runtime_control",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id"], properties: { run_id: { type: "string" } },
+		},
+	},
+	{
+		name: "godot.runtime.advance_frames",
+		description: "Wait for a bounded number of process or physics frames; paused runtimes are stepped explicitly.",
+		method: "runtime.advance_frames",
+		capability: "runtime_control",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["run_id", "frames"],
+			properties: {
+				run_id: { type: "string" },
+				frames: { type: "integer", minimum: 1, maximum: 600 },
+				frame_type: { type: "string", enum: ["physics", "process"] },
+				timeout_ms: { type: "integer", minimum: 100, maximum: 60000 },
+			},
+		},
+	},
+	{
+		name: "godot.runtime.get_tree",
+		description: "Get a bounded runtime-only node tree snapshot using runtime node paths.",
+		method: "runtime.get_tree",
+		capability: "runtime_inspection",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id"],
+			properties: {
+				run_id: { type: "string" }, root_path: { type: "string" },
+				max_depth: { type: "integer", minimum: 0, maximum: 12 },
+				max_nodes: { type: "integer", minimum: 1, maximum: 2000 },
+				timeout_ms: { type: "integer", minimum: 100, maximum: 60000 },
+			},
+		},
+	},
+	{
+		name: "godot.runtime.get_property",
+		description: "Read a serializable property from a runtime node.",
+		method: "runtime.get_property",
+		capability: "runtime_inspection",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id", "node_path", "property_name"],
+			properties: { run_id: { type: "string" }, node_path: { type: "string" }, property_name: { type: "string" }, timeout_ms: { type: "integer", minimum: 100, maximum: 60000 } },
+		},
+	},
+	{
+		name: "godot.runtime.set_property",
+		description: "Set a property on a runtime node and return its resulting serializable value.",
+		method: "runtime.set_property",
+		capability: "runtime_inspection",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id", "node_path", "property_name", "value"],
+			properties: { run_id: { type: "string" }, node_path: { type: "string" }, property_name: { type: "string" }, value: {}, timeout_ms: { type: "integer", minimum: 100, maximum: 60000 } },
+		},
+	},
+	{
+		name: "godot.runtime.call",
+		description: "Call a runtime-node method with up to 16 serializable arguments.",
+		method: "runtime.call",
+		capability: "runtime_inspection",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id", "node_path", "method"],
+			properties: {
+				run_id: { type: "string" }, node_path: { type: "string" }, method: { type: "string" },
+				arguments: { type: "array", maxItems: 16 },
+				confirm_destructive: { type: "boolean", description: "Required for free or queue_free" },
+				timeout_ms: { type: "integer", minimum: 100, maximum: 60000 },
+			},
+		},
+	},
+	{
+		name: "godot.runtime.input_action",
+		description: "Press, release, or hold a project InputMap action for a bounded number of physics frames.",
+		method: "runtime.input_action",
+		capability: "runtime_inspection",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id", "action"],
+			properties: {
+				run_id: { type: "string" }, action: { type: "string" }, pressed: { type: "boolean" },
+				strength: { type: "number", minimum: 0, maximum: 1 }, hold_frames: { type: "integer", minimum: 0, maximum: 600 },
+				timeout_ms: { type: "integer", minimum: 100, maximum: 60000 },
+			},
+		},
+	},
+	{
+		name: "godot.runtime.input_event",
+		description: "Send bounded mouse motion or mouse-button input to an MCP-owned runtime.",
+		method: "runtime.input_event",
+		capability: "runtime_inspection",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id", "type"],
+			properties: {
+				run_id: { type: "string" }, type: { type: "string", enum: ["mouse_motion", "mouse_button"] },
+				position: { type: "object", required: ["x", "y"], properties: { x: { type: "number" }, y: { type: "number" } }, additionalProperties: false },
+				relative: { type: "object", required: ["x", "y"], properties: { x: { type: "number" }, y: { type: "number" } }, additionalProperties: false },
+				button_index: { type: "integer", minimum: 1, maximum: 9 }, pressed: { type: "boolean" }, double_click: { type: "boolean" },
+				timeout_ms: { type: "integer", minimum: 100, maximum: 60000 },
+			},
+		},
+	},
+	{
+		name: "godot.runtime.capture_viewport",
+		description: "Capture a bounded PNG from a runtime viewport after an optional frame wait.",
+		method: "runtime.capture_viewport",
+		capability: "viewport_capture",
+		inputSchema: {
+			type: "object", additionalProperties: false, required: ["run_id"],
+			properties: {
+				run_id: { type: "string" }, viewport: { type: "string", description: "Runtime Viewport node path (default: /root)" },
+				crop: { type: "object", required: ["x", "y", "width", "height"], additionalProperties: false, properties: { x: { type: "integer" }, y: { type: "integer" }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } } },
+				scale: { type: "number", minimum: 0.05, maximum: 4 }, frame_wait: { type: "integer", minimum: 0, maximum: 600 },
+				timeout_ms: { type: "integer", minimum: 100, maximum: 60000 },
+			},
+		},
+	},
+	{
+		name: "godot.diagnostics.get",
+		description: "Read non-destructive, sequence-filtered editor or run-scoped diagnostics.",
+		method: "diagnostics.get",
+		capability: "diagnostics_v2",
+		retrySafe: true,
+		inputSchema: {
+			type: "object", additionalProperties: false,
+			properties: {
+				after_sequence: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 1000 },
+				session_id: { type: "string" }, run_id: { type: "string" }, source: { type: "string", enum: ["editor", "runtime"] },
+				severities: { type: "array", items: { type: "string", enum: ["error", "warning", "info"] } },
+			},
+		},
+	},
 ];
 
 const TOOL_BY_NAME = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
@@ -1136,4 +1426,11 @@ export function get_tool_list_for_mcp(): Array<Record<string, unknown>> {
 		description: tool.description,
 		inputSchema: tool.inputSchema,
 	}));
+}
+
+export function is_tool_retry_safe(p_tool: ToolDefinition): boolean {
+	if (p_tool.retrySafe !== undefined) {
+		return p_tool.retrySafe;
+	}
+	return p_tool.capability.startsWith("read_") || p_tool.method.endsWith(".status") || p_tool.method.endsWith(".info");
 }

@@ -6,10 +6,20 @@ export interface RpcClientOptions {
 	timeout_ms?: number;
 }
 
+export interface RpcClientLike {
+	get_port(): number;
+	call(p_method: string, p_params: Record<string, unknown>): Promise<unknown>;
+	close(): Promise<void>;
+}
+
 export class RpcTransportError extends Error {
-	constructor(p_message: string) {
+	readonly code: "DISCONNECTED" | "TIMEOUT";
+	readonly retryable = true;
+
+	constructor(p_message: string, p_code: "DISCONNECTED" | "TIMEOUT" = "DISCONNECTED") {
 		super(p_message);
 		this.name = "RpcTransportError";
+		this.code = p_code;
 	}
 }
 
@@ -37,6 +47,7 @@ export class GodotRpcClient {
 	private readonly timeout_ms: number;
 
 	private socket: net.Socket | null = null;
+	private connecting_socket: net.Socket | null = null;
 	private read_buffer = "";
 	private next_id = 1;
 	private connecting: Promise<void> | null = null;
@@ -127,6 +138,7 @@ export class GodotRpcClient {
 			this.socket.destroy();
 		}
 		this.socket = null;
+		this.connecting_socket = null;
 		this.connecting = null;
 		this.read_buffer = "";
 		this._reject_all_pending(p_error);
@@ -143,23 +155,37 @@ export class GodotRpcClient {
 
 		this.connecting = new Promise<void>((resolve, reject) => {
 			const socket = net.createConnection({ host: this.host, port: this.port });
+			this.connecting_socket = socket;
 			socket.setNoDelay(true);
 
 			const fail = (p_error: unknown) => {
+				clearTimeout(connect_timer);
 				socket.removeAllListeners("connect");
 				socket.removeAllListeners("data");
 				socket.removeAllListeners("close");
 				socket.removeAllListeners("end");
 				socket.removeAllListeners("error");
 				socket.destroy();
+				if (this.connecting_socket === socket) {
+					this.connecting_socket = null;
+				}
 				this.socket = null;
 				this.connecting = null;
-				reject(new RpcTransportError(`Could not connect to Godot RPC (${this.host}:${this.port}). ${String(p_error)}`));
+				reject(p_error instanceof RpcTransportError ? p_error :
+					new RpcTransportError(`Could not connect to Godot RPC (${this.host}:${this.port}). ${String(p_error)}`));
 			};
+			const connect_timer = setTimeout(() => {
+				fail(new RpcTransportError(
+					`Timed out connecting to Godot RPC (${this.host}:${this.port}) after ${this.timeout_ms}ms.`,
+					"TIMEOUT",
+				));
+			}, this.timeout_ms);
 
 			socket.once("error", fail);
 			socket.once("connect", () => {
+				clearTimeout(connect_timer);
 				socket.removeListener("error", fail);
+				this.connecting_socket = null;
 
 				socket.on("data", this._on_socket_data);
 				socket.on("error", (p_error: unknown) => {
@@ -182,10 +208,18 @@ export class GodotRpcClient {
 	}
 
 	async close(): Promise<void> {
+		const connection = this.connecting;
+		if (this.connecting_socket) {
+			this.connecting_socket.destroy(new RpcTransportError("RPC client closed while connecting."));
+			this.connecting_socket = null;
+		}
+		if (connection) {
+			await connection.catch(() => undefined);
+		}
+
 		if (!this.socket) {
 			return;
 		}
-
 		const socket = this.socket;
 		this.socket = null;
 		this.connecting = null;
@@ -211,7 +245,7 @@ export class GodotRpcClient {
 		return await new Promise<unknown>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(request_id);
-				reject(new RpcTransportError(`Godot RPC timeout after ${this.timeout_ms}ms for method '${p_method}'.`));
+					reject(new RpcTransportError(`Godot RPC timeout after ${this.timeout_ms}ms for method '${p_method}'.`, "TIMEOUT"));
 			}, this.timeout_ms);
 
 			this.pending.set(request_id, { timer, resolve, reject });
@@ -233,16 +267,9 @@ export class GodotRpcClient {
 	}
 
 	async call(p_method: string, p_params: Record<string, unknown>): Promise<unknown> {
-		try {
-			return await this._send_request_once(p_method, p_params);
-		} catch (error: unknown) {
-			if (!(error instanceof RpcTransportError)) {
-				throw error;
-			}
-
-			// One reconnect attempt for transient disconnects.
-			await this.close();
-			return await this._send_request_once(p_method, p_params);
-		}
+		// Retrying here can execute a mutation twice when the first response is
+		// lost. SessionLifecycle owns reconnect policy and retries only tools that
+		// are explicitly marked safe.
+		return await this._send_request_once(p_method, p_params);
 	}
 }

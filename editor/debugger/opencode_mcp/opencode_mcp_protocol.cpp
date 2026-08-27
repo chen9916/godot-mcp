@@ -30,6 +30,8 @@
 
 #include "opencode_mcp_protocol.h"
 
+#include "opencode_mcp_batch_result.h"
+
 #include "core/config/project_settings.h"
 #include "core/input/input_map.h"
 #include "core/io/dir_access.h"
@@ -783,6 +785,57 @@ static bool _serialize_resource_reference(const Variant &p_value, Variant &r_ser
 	return true;
 }
 
+static bool _read_serializable_properties(
+		Object *p_object, const Array &p_property_names, bool p_atomic,
+		const String &p_operation, const String &p_session_id, Dictionary &r_properties,
+		OpenCodeMCPBatchResult &r_batch, int &r_error_code, String &r_error_message) {
+	for (int i = 0; i < p_property_names.size(); i++) {
+		const Variant property_name_variant = p_property_names[i];
+		const bool invalid_type = property_name_variant.get_type() != Variant::STRING &&
+				property_name_variant.get_type() != Variant::STRING_NAME;
+		if (invalid_type || String(property_name_variant).is_empty()) {
+			const String message = "Property name at index " + itos(i) + " must be a non-empty string.";
+			if (p_atomic) {
+				r_error_code = OpenCodeMCPError::INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: " + message;
+				return false;
+			}
+			r_batch.add_error(i, OpenCodeMCPError::make_data(OpenCodeMCPError::INVALID_ARGUMENT, message, p_operation, p_session_id), "index");
+			continue;
+		}
+
+		const String property_name = property_name_variant;
+		bool valid = false;
+		Variant value = p_object->get(property_name, &valid);
+		if (!valid) {
+			const String message = "Unknown property: " + property_name;
+			if (p_atomic) {
+				r_error_code = OpenCodeMCPError::INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: " + message;
+				return false;
+			}
+			r_batch.add_error(property_name, OpenCodeMCPError::make_data(OpenCodeMCPError::INVALID_ARGUMENT, message, p_operation, p_session_id));
+			continue;
+		}
+
+		Variant serialized;
+		if (!_serialize_resource_reference(value, serialized)) {
+			const String message = "Property value is not serializable: " + property_name;
+			if (p_atomic) {
+				r_error_code = OpenCodeMCPError::INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: " + message;
+				return false;
+			}
+			r_batch.add_error(property_name, OpenCodeMCPError::make_data(OpenCodeMCPError::INVALID_ARGUMENT, message, p_operation, p_session_id));
+			continue;
+		}
+
+		r_properties[property_name] = serialized;
+		r_batch.add_success(property_name, serialized);
+	}
+	return true;
+}
+
 static bool _collect_properties_from_payload(const Dictionary &p_payload, Dictionary &r_properties, String &r_error_message) {
 	r_properties = p_payload.get("properties", Dictionary());
 
@@ -838,22 +891,6 @@ static bool _parse_batch_mode(const Dictionary &p_params, BatchMode &r_mode, Str
 
 	r_error_message = "INVALID_ARGUMENT: mode must be one of: atomic, best_effort.";
 	return false;
-}
-
-static Dictionary _make_batch_item_error(int p_index, const String &p_item_id, int p_error_code, const String &p_error_message, const String &p_status = "failed") {
-	Dictionary result;
-	result["index"] = p_index;
-	if (!p_item_id.is_empty()) {
-		result["item_id"] = p_item_id;
-	}
-	result["ok"] = false;
-	result["status"] = p_status;
-
-	Dictionary error;
-	error["code"] = p_error_code;
-	error["message"] = p_error_message;
-	result["error"] = error;
-	return result;
 }
 
 static Dictionary _make_batch_item_success(int p_index, const String &p_item_id, const Dictionary &p_data, const String &p_status = "applied") {
@@ -1144,6 +1181,20 @@ static void _collect_subtree_nodes(Node *p_node, Vector<Node *> &r_nodes) {
 }
 } // namespace
 
+Dictionary OpenCodeMCPProtocol::_make_batch_item_error(int p_index, const String &p_item_id, int p_error_code,
+		const String &p_error_message, const String &p_status) const {
+	Dictionary result;
+	result["index"] = p_index;
+	if (!p_item_id.is_empty()) {
+		result["item_id"] = p_item_id;
+	}
+	result["ok"] = false;
+	result["status"] = p_status;
+	result["error"] = OpenCodeMCPError::make_data(p_error_code, p_error_message,
+			current_operation.is_empty() ? String("batch") : current_operation, session_id);
+	return result;
+}
+
 void OpenCodeMCPProtocol::_error_handler_callback(void *p_user_data, const char *p_function,
 		const char *p_file, int p_line, const char *p_error,
 		const char *p_message, bool p_editor_notify, ErrorHandlerType p_type) {
@@ -1152,26 +1203,14 @@ void OpenCodeMCPProtocol::_error_handler_callback(void *p_user_data, const char 
 		return;
 	}
 
-	LogEntry entry;
-	entry.type = (p_type == ERR_HANDLER_WARNING) ? "warning" : "error";
-	entry.text = p_message && p_message[0] ? String::utf8(p_message) : String::utf8(p_error);
-	entry.file = p_file ? String::utf8(p_file) : String();
-	entry.function = p_function ? String::utf8(p_function) : String();
-	entry.line = p_line;
-	entry.timestamp = OS::get_singleton()->get_unix_time();
-
-	if ((int)self->log_ring_buffer.size() < MAX_LOG_ENTRIES) {
-		self->log_ring_buffer.push_back(entry);
-	} else {
-		self->log_ring_buffer[self->log_ring_write_pos] = entry;
-	}
-	self->log_ring_write_pos = (self->log_ring_write_pos + 1) % MAX_LOG_ENTRIES;
-	if (self->log_ring_count < MAX_LOG_ENTRIES) {
-		self->log_ring_count++;
-	}
+	self->diagnostics_store.add_editor(
+			p_type == ERR_HANDLER_WARNING ? "warning" : "error",
+			p_message && p_message[0] ? String::utf8(p_message) : String::utf8(p_error),
+			p_file ? String::utf8(p_file) : String(), p_line, 0,
+			p_function ? String::utf8(p_function) : String());
 }
 
-Error OpenCodeMCPProtocol::start(int p_requested_port, const Dictionary &p_capabilities) {
+Error OpenCodeMCPProtocol::start(int p_requested_port, const Dictionary &p_capabilities, const String &p_session_id) {
 	if (started) {
 		return OK;
 	}
@@ -1185,6 +1224,11 @@ Error OpenCodeMCPProtocol::start(int p_requested_port, const Dictionary &p_capab
 	server = new_server;
 	remote_port = server->get_local_port();
 	capabilities = p_capabilities;
+	session_id = p_session_id;
+	diagnostics_store.set_session_id(session_id);
+	filesystem_sync.set_session_id(session_id);
+	runtime_controller.initialize(&diagnostics_store);
+	viewport_capture.set_runtime_controller(&runtime_controller);
 	clients.clear();
 	started = true;
 
@@ -1201,6 +1245,8 @@ void OpenCodeMCPProtocol::stop() {
 	}
 
 	remove_error_handler(&error_handler);
+	runtime_controller.shutdown();
+	viewport_capture.set_runtime_controller(nullptr);
 
 	for (int i = 0; i < (int)clients.size(); i++) {
 		if (clients[i].peer.is_valid()) {
@@ -1215,17 +1261,18 @@ void OpenCodeMCPProtocol::stop() {
 	}
 
 	remote_port = 0;
+	filesystem_sync.set_session_id(String());
+	session_id.clear();
 	capabilities.clear();
 	started = false;
-	log_ring_buffer.clear();
-	log_ring_write_pos = 0;
-	log_ring_count = 0;
+	diagnostics_store.clear();
 }
 
 void OpenCodeMCPProtocol::poll() {
 	if (!started || server.is_null()) {
 		return;
 	}
+	runtime_controller.poll();
 
 	while (server->is_connection_available()) {
 		Ref<StreamPeerTCP> peer = server->take_connection();
@@ -1324,6 +1371,9 @@ String OpenCodeMCPProtocol::_capability_for_method(const String &p_method) const
 	if (p_method == "script.apply_text_edits" || p_method == "shader.edit") {
 		return "write_script";
 	}
+	if (p_method == "script.validate") {
+		return "script_validation";
+	}
 	if (p_method == "resource.save" || p_method == "resource.reload") {
 		return "save_resource";
 	}
@@ -1333,8 +1383,28 @@ String OpenCodeMCPProtocol::_capability_for_method(const String &p_method) const
 	if (p_method == "resource.create" || p_method == "resource.set_properties") {
 		return "write_resource";
 	}
+	if (p_method == "filesystem.scan" || p_method == "filesystem.wait" || p_method == "resource.import") {
+		return "filesystem_sync";
+	}
+	if (p_method == "resource.status") {
+		return "resource_versioning";
+	}
+	if (p_method == "runtime.start" || p_method == "runtime.stop" || p_method == "runtime.status" ||
+			p_method == "runtime.pause" || p_method == "runtime.resume" || p_method == "runtime.advance_frames") {
+		return "runtime_control";
+	}
+	if (p_method == "runtime.get_tree" || p_method == "runtime.get_property" || p_method == "runtime.set_property" ||
+			p_method == "runtime.call" || p_method == "runtime.input_action" || p_method == "runtime.input_event") {
+		return "runtime_inspection";
+	}
+	if (p_method == "runtime.capture_viewport") {
+		return "viewport_capture";
+	}
 	if (p_method == "project.get_setting" || p_method == "editor.get_errors") {
 		return "read_project";
+	}
+	if (p_method == "diagnostics.get") {
+		return "diagnostics_v2";
 	}
 	if (p_method == "project.set_setting") {
 		return "write_project";
@@ -1375,7 +1445,8 @@ Dictionary OpenCodeMCPProtocol::_make_response(const Variant &p_result, const Va
 	return response;
 }
 
-Dictionary OpenCodeMCPProtocol::_make_error_response(int p_error_code, const String &p_error_message, const Variant &p_id) const {
+Dictionary OpenCodeMCPProtocol::_make_error_response(int p_error_code, const String &p_error_message, const Variant &p_id,
+		const String &p_operation, const String &p_run_id, const Dictionary &p_details) const {
 	Dictionary response;
 	response["jsonrpc"] = "2.0";
 	response["id"] = p_id;
@@ -1383,6 +1454,7 @@ Dictionary OpenCodeMCPProtocol::_make_error_response(int p_error_code, const Str
 	Dictionary error;
 	error["code"] = p_error_code;
 	error["message"] = p_error_message;
+	error["data"] = OpenCodeMCPError::make_data(p_error_code, p_error_message, p_operation, session_id, p_run_id, p_details);
 	response["error"] = error;
 	return response;
 }
@@ -1391,12 +1463,12 @@ Dictionary OpenCodeMCPProtocol::_process_request_line(const String &p_line) {
 	JSON json;
 	Error parse_error = json.parse(p_line);
 	if (parse_error != OK) {
-		return _make_error_response(-32700, "Parse error", Variant());
+		return _make_error_response(-32700, "Parse error", Variant(), "protocol.parse");
 	}
 
 	Variant data = json.get_data();
 	if (data.get_type() != Variant::DICTIONARY) {
-		return _make_error_response(-32600, "Invalid Request", Variant());
+		return _make_error_response(-32600, "Invalid Request", Variant(), "protocol.request");
 	}
 
 	Dictionary request = data;
@@ -1408,7 +1480,7 @@ Dictionary OpenCodeMCPProtocol::_process_request_line(const String &p_line) {
 		if (is_notification) {
 			return Dictionary();
 		}
-		return _make_error_response(-32600, "Invalid Request: missing method", id);
+		return _make_error_response(-32600, "Invalid Request: missing method", id, "protocol.request");
 	}
 
 	Variant params_variant = request.get("params", Dictionary());
@@ -1416,17 +1488,40 @@ Dictionary OpenCodeMCPProtocol::_process_request_line(const String &p_line) {
 		if (is_notification) {
 			return Dictionary();
 		}
-		return _make_error_response(-32602, "Invalid params: expected Dictionary", id);
+		return _make_error_response(-32602, "Invalid params: expected Dictionary", id, method);
 	}
 
 	Dictionary params = params_variant;
+	const String requested_session_id = params.get("_session_id", String());
+	const String run_id = params.get("run_id", String());
+	current_operation = method;
+	method_error_details.clear();
+	if (method != "opencode.session.info" && requested_session_id.is_empty()) {
+		if (is_notification) {
+			return Dictionary();
+		}
+		Dictionary details;
+		details["expected_session_id"] = session_id;
+		return _make_error_response(ERROR_STALE_SESSION,
+				"STALE_SESSION: protocol v2 requests must include the current _session_id.", id, method, run_id, details);
+	}
+	if (!requested_session_id.is_empty() && requested_session_id != session_id) {
+		if (is_notification) {
+			return Dictionary();
+		}
+		Dictionary details;
+		details["expected_session_id"] = session_id;
+		details["received_session_id"] = requested_session_id;
+		return _make_error_response(ERROR_STALE_SESSION,
+				"STALE_SESSION: request targets an obsolete Godot editor process.", id, method, run_id, details);
+	}
 	int capability_error_code = 0;
 	String capability_error_message;
 	if (!_is_method_allowed(method, capability_error_code, capability_error_message)) {
 		if (is_notification) {
 			return Dictionary();
 		}
-		return _make_error_response(capability_error_code, capability_error_message, id);
+		return _make_error_response(capability_error_code, capability_error_message, id, method, run_id);
 	}
 
 	int method_error_code = 0;
@@ -1436,7 +1531,7 @@ Dictionary OpenCodeMCPProtocol::_process_request_line(const String &p_line) {
 		if (is_notification) {
 			return Dictionary();
 		}
-		return _make_error_response(method_error_code, method_error_message, id);
+		return _make_error_response(method_error_code, method_error_message, id, method, run_id, method_error_details);
 	}
 
 	if (is_notification) {
@@ -1509,6 +1604,9 @@ Dictionary OpenCodeMCPProtocol::_dispatch_method(const String &p_method, const D
 	if (p_method == "script.apply_text_edits") {
 		return _method_script_apply_text_edits(p_params, r_error_code, r_error_message);
 	}
+	if (p_method == "script.validate") {
+		return _method_script_validate(p_params, r_error_code, r_error_message);
+	}
 	if (p_method == "script.attach") {
 		return _method_script_attach(p_params, r_error_code, r_error_message);
 	}
@@ -1526,6 +1624,57 @@ Dictionary OpenCodeMCPProtocol::_dispatch_method(const String &p_method, const D
 	}
 	if (p_method == "resource.reload") {
 		return _method_resource_reload(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "filesystem.scan") {
+		return _method_filesystem_scan(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "filesystem.wait") {
+		return _method_filesystem_wait(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "resource.import") {
+		return _method_resource_import(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "resource.status") {
+		return _method_resource_status(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.start") {
+		return _method_runtime_start(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.stop") {
+		return _method_runtime_stop(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.status") {
+		return _method_runtime_status(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.pause") {
+		return _method_runtime_pause(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.resume") {
+		return _method_runtime_resume(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.advance_frames") {
+		return _method_runtime_advance_frames(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.get_tree") {
+		return _method_runtime_request("get_tree", p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.get_property") {
+		return _method_runtime_request("get_property", p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.set_property") {
+		return _method_runtime_request("set_property", p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.call") {
+		return _method_runtime_request("call", p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.input_action") {
+		return _method_runtime_request("input_action", p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.input_event") {
+		return _method_runtime_request("input_event", p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.capture_viewport") {
+		return _method_runtime_capture_viewport(p_params, r_error_code, r_error_message);
 	}
 
 	// Scene management tools.
@@ -1591,6 +1740,9 @@ Dictionary OpenCodeMCPProtocol::_dispatch_method(const String &p_method, const D
 	if (p_method == "editor.get_errors") {
 		return _method_editor_get_errors(p_params, r_error_code, r_error_message);
 	}
+	if (p_method == "diagnostics.get") {
+		return _method_diagnostics_get(p_params, r_error_code, r_error_message);
+	}
 
 	// Docs tools.
 	if (p_method == "docs.class_lookup") {
@@ -1633,10 +1785,13 @@ Dictionary OpenCodeMCPProtocol::_dispatch_method(const String &p_method, const D
 
 Dictionary OpenCodeMCPProtocol::_method_session_info() const {
 	Dictionary info;
+	info["session_id"] = session_id;
+	info["state"] = "connected";
 	info["port"] = remote_port;
 	info["capabilities"] = capabilities;
 	info["transport"] = "jsonrpc-line";
-	info["protocol"] = "opencode-godot-v1";
+	info["protocol"] = "opencode-godot-v2";
+	info["protocol_version"] = 2;
 	return _make_ok(info);
 }
 
@@ -2262,41 +2417,20 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_properties(const Dictionary &p_
 		return Dictionary();
 	}
 
+	const bool atomic = bool(p_params.get("atomic", false));
 	Dictionary values;
-	for (int i = 0; i < property_names.size(); i++) {
-		Variant property_name_variant = property_names[i];
-		if (property_name_variant.get_type() != Variant::STRING && property_name_variant.get_type() != Variant::STRING_NAME) {
-			r_error_code = ERROR_INVALID_ARGUMENT;
-			r_error_message = "INVALID_ARGUMENT: property_names entries must be strings.";
-			return Dictionary();
-		}
-
-		StringName property_name = String(property_name_variant);
-		bool valid = false;
-		Variant value = node->get(property_name, &valid);
-		if (!valid) {
-			r_error_code = ERROR_INVALID_ARGUMENT;
-			r_error_message = "INVALID_ARGUMENT: unknown property: " + String(property_name);
-			return Dictionary();
-		}
-
-		if (value.get_type() == Variant::OBJECT) {
-			Variant serialized;
-			if (!_serialize_resource_reference(value, serialized)) {
-				r_error_code = ERROR_INVALID_ARGUMENT;
-				r_error_message = "INVALID_ARGUMENT: property value is not serializable: " + String(property_name);
-				return Dictionary();
-			}
-			value = serialized;
-		}
-
-		values[String(property_name)] = value;
+	OpenCodeMCPBatchResult batch;
+	if (!_read_serializable_properties(
+				node, property_names, atomic, "node.get_properties", session_id,
+				values, batch, r_error_code, r_error_message)) {
+		return Dictionary();
 	}
 
-	Dictionary data;
+	Dictionary data = batch.to_data();
 	data["node_path"] = node_path;
 	data["properties"] = values;
 	data["property_count"] = values.size();
+	data["atomic"] = atomic;
 	return _make_ok(data);
 }
 
@@ -2325,14 +2459,21 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_properties_batch(const Dictiona
 		return Dictionary();
 	}
 
+	const bool atomic = bool(p_params.get("atomic", false));
 	Array results;
 	results.resize(items.size());
 	int success_count = 0;
 	int failure_count = 0;
+	int partial_count = 0;
 
 	for (int i = 0; i < items.size(); i++) {
 		String item_id;
 		if (items[i].get_type() != Variant::DICTIONARY) {
+			if (atomic) {
+				r_error_code = ERROR_INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: items entries must be dictionaries.";
+				return Dictionary();
+			}
 			results[i] = _make_batch_item_error(i, item_id, ERROR_INVALID_ARGUMENT, "INVALID_ARGUMENT: items entries must be dictionaries.");
 			failure_count++;
 			continue;
@@ -2347,6 +2488,11 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_properties_batch(const Dictiona
 		String node_path = item.get("node_path", String());
 		Variant property_names_variant = item.get("property_names", Variant());
 		if (node_path.is_empty() || property_names_variant.get_type() != Variant::ARRAY) {
+			if (atomic) {
+				r_error_code = ERROR_INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: node_path and non-empty property_names array are required.";
+				return Dictionary();
+			}
 			results[i] = _make_batch_item_error(i, item_id, ERROR_INVALID_ARGUMENT, "INVALID_ARGUMENT: node_path and non-empty property_names array are required.");
 			failure_count++;
 			continue;
@@ -2354,6 +2500,11 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_properties_batch(const Dictiona
 
 		Array property_names = property_names_variant;
 		if (property_names.is_empty()) {
+			if (atomic) {
+				r_error_code = ERROR_INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: property_names must be non-empty.";
+				return Dictionary();
+			}
 			results[i] = _make_batch_item_error(i, item_id, ERROR_INVALID_ARGUMENT, "INVALID_ARGUMENT: property_names must be non-empty.");
 			failure_count++;
 			continue;
@@ -2361,59 +2512,32 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_properties_batch(const Dictiona
 
 		Node *node = _resolve_node_path(node_path, root);
 		if (!node) {
+			if (atomic) {
+				r_error_code = ERROR_NOT_FOUND;
+				r_error_message = "NOT_FOUND: Node path does not exist: " + node_path;
+				return Dictionary();
+			}
 			results[i] = _make_batch_item_error(i, item_id, ERROR_NOT_FOUND, "NOT_FOUND: Node path does not exist.");
 			failure_count++;
 			continue;
 		}
 
 		Dictionary values;
-		bool item_failed = false;
-		int item_error_code = 0;
-		String item_error_message;
-		for (int j = 0; j < property_names.size(); j++) {
-			Variant property_name_variant = property_names[j];
-			if (property_name_variant.get_type() != Variant::STRING && property_name_variant.get_type() != Variant::STRING_NAME) {
-				item_error_code = ERROR_INVALID_ARGUMENT;
-				item_error_message = "INVALID_ARGUMENT: property_names entries must be strings.";
-				item_failed = true;
-				break;
-			}
-
-			StringName property_name = String(property_name_variant);
-			bool valid = false;
-			Variant value = node->get(property_name, &valid);
-			if (!valid) {
-				item_error_code = ERROR_INVALID_ARGUMENT;
-				item_error_message = "INVALID_ARGUMENT: unknown property: " + String(property_name);
-				item_failed = true;
-				break;
-			}
-
-			if (value.get_type() == Variant::OBJECT) {
-				Variant serialized;
-				if (!_serialize_resource_reference(value, serialized)) {
-					item_error_code = ERROR_INVALID_ARGUMENT;
-					item_error_message = "INVALID_ARGUMENT: property value is not serializable: " + String(property_name);
-					item_failed = true;
-					break;
-				}
-				value = serialized;
-			}
-
-			values[String(property_name)] = value;
+		OpenCodeMCPBatchResult property_batch;
+		if (!_read_serializable_properties(
+					node, property_names, atomic, "node.get_properties_batch", session_id,
+					values, property_batch, r_error_code, r_error_message)) {
+			return Dictionary();
 		}
 
-		if (item_failed) {
-			results[i] = _make_batch_item_error(i, item_id, item_error_code, item_error_message);
-			failure_count++;
-			continue;
-		}
-
-		Dictionary item_data;
+		Dictionary item_data = property_batch.to_data();
 		item_data["node_path"] = node_path;
 		item_data["properties"] = values;
 		item_data["property_count"] = values.size();
-		results[i] = _make_batch_item_success(i, item_id, item_data);
+		const bool partial = property_batch.has_failures();
+		item_data["partial"] = partial;
+		results[i] = _make_batch_item_success(i, item_id, item_data, partial ? "partial" : "applied");
+		partial_count += partial ? 1 : 0;
 		success_count++;
 	}
 
@@ -2421,7 +2545,9 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_properties_batch(const Dictiona
 	data["total_count"] = items.size();
 	data["success_count"] = success_count;
 	data["failure_count"] = failure_count;
+	data["partial_count"] = partial_count;
 	data["results"] = results;
+	data["atomic"] = atomic;
 	return _make_ok(data);
 }
 
@@ -4200,6 +4326,14 @@ Dictionary OpenCodeMCPProtocol::_method_script_get(const Dictionary &p_params, i
 	return _make_ok(data);
 }
 
+Dictionary OpenCodeMCPProtocol::_method_script_validate(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
+	Dictionary data = script_validation.validate(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
+	return _make_ok(data);
+}
+
 int OpenCodeMCPProtocol::_line_col_to_index(const String &p_text, int p_line, int p_col) {
 	if (p_line < 0 || p_col < 0) {
 		return -1;
@@ -5046,41 +5180,126 @@ Dictionary OpenCodeMCPProtocol::_method_resource_reload(const Dictionary &p_para
 			return Dictionary();
 		}
 
-		editor_node->reload_scene(path);
-
 		EditorData &editor_data = EditorNode::get_editor_data();
 		const int scene_idx = editor_data.get_edited_scene_from_path(path);
+		if (scene_idx >= 0 && editor_node->is_scene_unsaved(scene_idx)) {
+			method_error_details["path"] = path;
+			method_error_details["editor_unsaved"] = true;
+			r_error_code = ERROR_CONFLICT;
+			r_error_message = "CONFLICT: scene has unsaved editor changes; reload refused.";
+			return Dictionary();
+		}
+		const String expected_version = p_params.get("expected_version", String());
+		const String disk_version = FileAccess::get_md5(path);
+		if (!expected_version.is_empty() && expected_version != disk_version) {
+			method_error_details["path"] = path;
+			method_error_details["expected_version"] = expected_version;
+			method_error_details["disk_version"] = disk_version;
+			r_error_code = ERROR_CONFLICT;
+			r_error_message = "CONFLICT: scene disk version differs from expected_version.";
+			return Dictionary();
+		}
+
+		editor_node->reload_scene(path);
 		if (scene_idx >= 0) {
 			editor_data.set_scene_modified_time(scene_idx, FileAccess::get_modified_time(path));
 		}
 	} else {
-		Ref<Resource> resource = ResourceCache::get_ref(path);
-		if (resource.is_null()) {
-			resource = ResourceLoader::load(path);
-		}
-		if (resource.is_null()) {
-			r_error_code = ERROR_NOT_FOUND;
-			r_error_message = "NOT_FOUND: resource path could not be loaded.";
+		Dictionary reload_params = p_params.duplicate();
+		reload_params["path"] = path;
+		Dictionary data = resource_versioning.reload(reload_params, r_error_code, r_error_message, &method_error_details);
+		if (r_error_code != 0) {
 			return Dictionary();
 		}
-		if (!resource->editor_can_reload_from_file()) {
-			r_error_code = ERROR_CONFLICT;
-			r_error_message = "CONFLICT: resource type does not support reload_from_file.";
-			return Dictionary();
-		}
-
-		resource->reload_from_file();
-		resource->set_last_modified_time(FileAccess::get_modified_time(path));
-
-		EditorNode::get_editor_data().notify_resource_saved(resource);
-		if (ScriptEditor::get_singleton()) {
-			ScriptEditor::get_singleton()->update_script_times();
-		}
+		return _make_ok(data);
 	}
 
 	Dictionary data;
 	data["path"] = path;
 	return _make_ok(data);
+}
+
+Dictionary OpenCodeMCPProtocol::_method_filesystem_scan(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = filesystem_sync.scan(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
+	return _make_ok(data);
+}
+
+Dictionary OpenCodeMCPProtocol::_method_filesystem_wait(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
+	Dictionary data = filesystem_sync.wait_status(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
+	return _make_ok(data);
+}
+
+Dictionary OpenCodeMCPProtocol::_method_resource_import(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = filesystem_sync.import_resources(
+			p_params, diagnostics_store, r_error_code, r_error_message, &method_error_details);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
+	return _make_ok(data);
+}
+
+Dictionary OpenCodeMCPProtocol::_method_resource_status(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
+	Dictionary data = resource_versioning.get_status(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
+	return _make_ok(data);
+}
+
+Dictionary OpenCodeMCPProtocol::_method_runtime_start(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = runtime_controller.start(p_params, r_error_code, r_error_message);
+	return r_error_code == 0 ? _make_ok(data) : Dictionary();
+}
+
+Dictionary OpenCodeMCPProtocol::_method_runtime_stop(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = runtime_controller.stop(p_params, r_error_code, r_error_message);
+	return r_error_code == 0 ? _make_ok(data) : Dictionary();
+}
+
+Dictionary OpenCodeMCPProtocol::_method_runtime_status(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = runtime_controller.status(p_params, r_error_code, r_error_message);
+	return r_error_code == 0 ? _make_ok(data) : Dictionary();
+}
+
+Dictionary OpenCodeMCPProtocol::_method_runtime_pause(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = runtime_controller.pause(p_params, r_error_code, r_error_message);
+	return r_error_code == 0 ? _make_ok(data) : Dictionary();
+}
+
+Dictionary OpenCodeMCPProtocol::_method_runtime_resume(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = runtime_controller.resume(p_params, r_error_code, r_error_message);
+	return r_error_code == 0 ? _make_ok(data) : Dictionary();
+}
+
+Dictionary OpenCodeMCPProtocol::_method_runtime_advance_frames(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = runtime_controller.advance_frames(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		method_error_details = runtime_controller.get_last_error_details();
+	}
+	return r_error_code == 0 ? _make_ok(data) : Dictionary();
+}
+
+Dictionary OpenCodeMCPProtocol::_method_runtime_request(const String &p_operation, const Dictionary &p_params,
+		int &r_error_code, String &r_error_message) {
+	Dictionary data = runtime_controller.request(p_operation, p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		method_error_details = runtime_controller.get_last_error_details();
+	}
+	return r_error_code == 0 ? _make_ok(data) : Dictionary();
+}
+
+Dictionary OpenCodeMCPProtocol::_method_runtime_capture_viewport(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	Dictionary data = viewport_capture.capture(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		method_error_details = runtime_controller.get_last_error_details();
+	}
+	return r_error_code == 0 ? _make_ok(data) : Dictionary();
 }
 
 // ---------------------------------------------------------------------------
@@ -5565,27 +5784,15 @@ Dictionary OpenCodeMCPProtocol::_method_resource_get(const Dictionary &p_params,
 
 	Variant property_names_variant = p_params.get("property_names", Variant());
 	Dictionary properties;
+	OpenCodeMCPBatchResult batch;
+	const bool atomic = bool(p_params.get("atomic", false));
 
 	if (property_names_variant.get_type() == Variant::ARRAY) {
 		Array property_names = property_names_variant;
-		for (int i = 0; i < property_names.size(); i++) {
-			String prop_name = property_names[i];
-			bool valid = false;
-			Variant value = resource->get(prop_name, &valid);
-			if (!valid) {
-				r_error_code = ERROR_INVALID_ARGUMENT;
-				r_error_message = "INVALID_ARGUMENT: unknown property: " + prop_name;
-				return Dictionary();
-			}
-			if (value.get_type() == Variant::OBJECT) {
-				Variant serialized;
-				if (!_serialize_resource_reference(value, serialized)) {
-					continue;
-				}
-				properties[prop_name] = serialized;
-				continue;
-			}
-			properties[prop_name] = value;
+		if (!_read_serializable_properties(
+					resource.ptr(), property_names, atomic, "resource.get", session_id,
+					properties, batch, r_error_code, r_error_message)) {
+			return Dictionary();
 		}
 	} else {
 		// Return all serializable properties.
@@ -5609,17 +5816,20 @@ Dictionary OpenCodeMCPProtocol::_method_resource_get(const Dictionary &p_params,
 					continue;
 				}
 				properties[String(pi.name)] = serialized;
+				batch.add_success(String(pi.name), serialized);
 				continue;
 			}
 			properties[String(pi.name)] = value;
+			batch.add_success(String(pi.name), value);
 		}
 	}
 
-	Dictionary data;
+	Dictionary data = batch.to_data();
 	data["path"] = path;
 	data["class"] = resource->get_class();
 	data["properties"] = properties;
 	data["property_count"] = properties.size();
+	data["atomic"] = atomic;
 	return _make_ok(data);
 }
 
@@ -6147,26 +6357,50 @@ Dictionary OpenCodeMCPProtocol::_method_project_get_setting(const Dictionary &p_
 		return Dictionary();
 	}
 
+	const bool atomic = bool(p_params.get("atomic", false));
 	Dictionary settings;
+	OpenCodeMCPBatchResult batch;
 	for (int i = 0; i < keys.size(); i++) {
+		if (keys[i].get_type() != Variant::STRING || String(keys[i]).is_empty()) {
+			const String message = "Setting key at index " + itos(i) + " must be a non-empty string.";
+			if (atomic) {
+				r_error_code = ERROR_INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: " + message;
+				return Dictionary();
+			}
+			batch.add_error(i, OpenCodeMCPError::make_data(ERROR_INVALID_ARGUMENT, message, "project.get_setting", session_id));
+			continue;
+		}
+
 		String key = keys[i];
 		if (!ps->has_setting(key)) {
-			r_error_code = ERROR_NOT_FOUND;
-			r_error_message = "NOT_FOUND: setting key does not exist: " + key;
-			return Dictionary();
+			const String message = "Setting key does not exist: " + key;
+			if (atomic) {
+				r_error_code = ERROR_NOT_FOUND;
+				r_error_message = "NOT_FOUND: " + message;
+				return Dictionary();
+			}
+			batch.add_error(key, OpenCodeMCPError::make_data(ERROR_NOT_FOUND, message, "project.get_setting", session_id));
+			continue;
 		}
 		Variant value = ps->get_setting(key);
 		if (value.get_type() == Variant::OBJECT) {
-			r_error_code = ERROR_INVALID_ARGUMENT;
-			r_error_message = "INVALID_ARGUMENT: setting value is not serializable: " + key;
-			return Dictionary();
+			const String message = "Setting value is not serializable: " + key;
+			if (atomic) {
+				r_error_code = ERROR_INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: " + message;
+				return Dictionary();
+			}
+			batch.add_error(key, OpenCodeMCPError::make_data(ERROR_INVALID_ARGUMENT, message, "project.get_setting", session_id));
+			continue;
 		}
 		settings[key] = value;
+		batch.add_success(key, value);
 	}
 
-	Dictionary data;
+	Dictionary data = batch.to_data();
 	data["settings"] = settings;
-	data["count"] = settings.size();
+	data["atomic"] = atomic;
 	return _make_ok(data);
 }
 
@@ -6266,80 +6500,45 @@ Dictionary OpenCodeMCPProtocol::_method_project_set_setting(const Dictionary &p_
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_editor_get_errors(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	int limit = (int)p_params.get("limit", 50);
-	bool clear = bool(p_params.get("clear", false));
+	Dictionary query_params = p_params.duplicate();
+	if (query_params.has("types")) {
+		query_params["severities"] = query_params["types"];
+		query_params.erase("types");
+	}
+	query_params["source"] = "editor";
 
-	if (limit < 1) {
+	const bool clear = bool(query_params.get("clear", false));
+	query_params.erase("clear");
+	const bool confirm_clear = bool(query_params.get("confirm_clear", false));
+	query_params.erase("confirm_clear");
+	if (clear && !confirm_clear) {
 		r_error_code = ERROR_INVALID_ARGUMENT;
-		r_error_message = "INVALID_ARGUMENT: limit must be >= 1.";
+		r_error_message = "INVALID_ARGUMENT: clear=true requires confirm_clear=true.";
 		return Dictionary();
 	}
 
-	// Filter by types.
-	Vector<String> type_filters;
-	Variant types_variant = p_params.get("types", Variant());
-	if (types_variant.get_type() == Variant::ARRAY) {
-		Array types = types_variant;
-		for (int i = 0; i < types.size(); i++) {
-			type_filters.push_back(String(types[i]).to_lower());
-		}
-	} else {
-		type_filters.push_back("error");
-		type_filters.push_back("warning");
+	Dictionary data = diagnostics_store.query(query_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
 	}
-
-	Array messages;
-	bool truncated = false;
-
-	// Read from the ring buffer (oldest first).
-	int total = log_ring_count;
-	int start_idx = 0;
-	if (total >= MAX_LOG_ENTRIES) {
-		start_idx = log_ring_write_pos; // Oldest entry.
-	}
-
-	for (int i = 0; i < total; i++) {
-		int idx = (start_idx + i) % (int)log_ring_buffer.size();
-		const LogEntry &entry = log_ring_buffer[idx];
-
-		bool type_match = false;
-		for (int j = 0; j < type_filters.size(); j++) {
-			if (entry.type == type_filters[j]) {
-				type_match = true;
-				break;
-			}
-		}
-		if (!type_match) {
-			continue;
-		}
-
-		if (messages.size() >= limit) {
-			truncated = true;
-			break;
-		}
-
-		Dictionary msg;
-		msg["type"] = entry.type;
-		msg["text"] = entry.text;
-		msg["file"] = entry.file;
-		msg["function"] = entry.function;
-		msg["line"] = entry.line;
-		msg["timestamp"] = (int64_t)entry.timestamp;
-		messages.push_back(msg);
-	}
-
 	if (clear) {
-		// const_cast is needed because poll() runs on the main thread too.
-		OpenCodeMCPProtocol *mutable_self = const_cast<OpenCodeMCPProtocol *>(this);
-		mutable_self->log_ring_buffer.clear();
-		mutable_self->log_ring_write_pos = 0;
-		mutable_self->log_ring_count = 0;
+		const_cast<OpenCodeMCPDiagnosticsStore &>(diagnostics_store).clear();
+		data["cleared"] = true;
 	}
+	return _make_ok(data);
+}
 
-	Dictionary data;
-	data["messages"] = messages;
-	data["count"] = messages.size();
-	data["truncated"] = truncated;
+Dictionary OpenCodeMCPProtocol::_method_diagnostics_get(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
+	if (bool(p_params.get("clear", false))) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: diagnostics.get is non-destructive; use editor.get_errors with clear "
+				"and confirm_clear for legacy clearing.";
+		return Dictionary();
+	}
+	Dictionary data = diagnostics_store.query(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	return _make_ok(data);
 }
 

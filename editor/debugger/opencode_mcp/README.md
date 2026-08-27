@@ -3,6 +3,8 @@
 This module exposes an editor-hosted JSON-RPC endpoint for the OpenCode MCP bridge.
 It is intended for local, live editing flows in the Godot editor (scene, node, and script operations).
 
+Protocol v2 automation schemas are documented in [AUTOMATION_TOOLS_V2.md](AUTOMATION_TOOLS_V2.md). Module ownership and end-to-end request flow are documented in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Lifecycle and settings
 
 - Plugin type: `EditorPlugin` (`OpenCodeMCPServer`).
@@ -39,12 +41,17 @@ When the server starts, it writes session metadata to:
 
 Session file payload includes:
 
+- `session_id` (a unique UUID for this editor process)
+- `protocol_version` (`2`)
+- `state`
 - `port`
 - `pid`
+- `project_path`
+- `started_at`
 - `expires_at`
 - `capabilities`
 
-The session file is removed when the server stops.
+The session file is removed when the server stops only if it still contains this process's session UUID, so an older editor cannot remove a replacement editor's registration.
 
 ## Capability checks
 
@@ -74,11 +81,24 @@ Project and editor:
 - `read_project`: `project.get_setting`, `editor.get_errors`
 - `write_project`: `project.set_setting`
 
+Automation v2:
+
+- `script_validation`: `script.validate`
+- `filesystem_sync`: `filesystem.scan`, `filesystem.wait`, `resource.import`
+- `resource_versioning`: `resource.status`
+- `runtime_control`: `runtime.start`, `runtime.stop`, `runtime.status`, `runtime.pause`, `runtime.resume`, `runtime.advance_frames`
+- `runtime_inspection`: `runtime.get_tree`, `runtime.get_property`, `runtime.set_property`, `runtime.call`, `runtime.input_action`, `runtime.input_event`
+- `viewport_capture`: `runtime.capture_viewport`
+- `diagnostics_v2`: `diagnostics.get`
+- `partial_batch_results`: negotiated response behavior for partial setting, node-property, and resource-property reads
+
 Documentation:
 
 - `read_docs`: `docs.class_lookup`, `docs.member_lookup`, `docs.search`, `docs.inheritance`, `docs.examples`, `docs.list_versions`
 
-## Methods (v1)
+## Editor methods
+
+The focused v2 validation, filesystem, resource-status, runtime, capture, and diagnostics methods are specified in [AUTOMATION_TOOLS_V2.md](AUTOMATION_TOOLS_V2.md). The methods below remain available for compatibility.
 
 ### Session
 
@@ -116,14 +136,15 @@ Documentation:
   - Optional params: `name`, `position`, `properties`.
 - `node.get_properties`
   - Required params: `node_path`, non-empty `property_names` array.
-  - Returns a dictionary of requested property values.
-  - Rejects unknown property names.
+  - Returns successful properties plus one result item per requested property.
+  - Unknown or non-serializable properties are per-property errors by default; optional `atomic=true` retains fail-fast behavior.
   - Resource-valued object properties are serialized as `{ "class", "path", "uid" }` when available.
   - Non-resource object values remain non-serializable and return `INVALID_ARGUMENT`.
 - `node.get_properties_batch`
   - Required param: non-empty `items` array of `{ node_path, property_names[] }`.
+  - Optional `atomic` defaults to `false`.
   - Optional per-item `item_id` is echoed in item results.
-  - Read-only batch operation; returns per-item `ok/data/error` entries.
+  - Read-only batch operation; returns per-node results and nested per-property results, retaining readable values when another property is missing.
   - Resource-valued object properties are serialized as `{ "class", "path", "uid" }` when available.
 - `node.get_property`
   - Required params: `node_path`, `property_name`.
@@ -261,10 +282,13 @@ Documentation:
 - `resource.reload`
   - Optional param: `path` (`res://`).
   - If omitted, active scene path is used.
-  - Reloads scene/resources from disk into editor state.
+  - Optional `expected_version` applies an optimistic disk MD5 check.
+  - Refuses to overwrite an unsaved scene or an open script buffer that differs from disk.
+  - Uses a script-specific reload path and reports before/after disk, buffer, and loaded versions plus scene-instance/runtime reload status.
 - `resource.get`
   - Inspects a resource's serializable properties.
-  - Required param: `path`. Optional param: `property_names` (array; omit for all serializable properties).
+  - Required param: `path`. Optional params: `property_names` (array; omit for all serializable properties), `atomic` (default `false`).
+  - Selected reads retain successes beside per-property errors unless `atomic=true`.
   - Resource-valued properties are returned as references: `{ "class", "path", "uid" }` when available.
 - `resource.list`
   - Lists resource files in a directory with optional extension filter.
@@ -311,15 +335,16 @@ Documentation:
 
 - `project.get_setting`
   - Reads project settings by key.
-  - Required param: `keys` (non-empty string array).
-  - Returns a dictionary of key-value pairs.
+  - Required param: `keys` (non-empty string array). Optional `atomic` defaults to `false`.
+  - Returns the compatibility settings dictionary plus per-key success/error items, so a missing setting does not discard successful reads.
 - `project.set_setting`
   - Modifies project settings and auto-saves to `project.godot`.
   - Required param: `settings` (non-empty dictionary).
   - No undo support (matches editor behavior).
 - `editor.get_errors`
   - Returns recent errors and warnings captured by the error handler.
-  - Optional params: `types` (default `["error", "warning"]`), `limit` (default `50`), `clear` (default `false`).
+  - Optional params: `types` (default `["error", "warning"]`), `limit` (default `50`), `after_sequence`, and `confirm_clear`.
+  - Clearing requires `confirm_clear=true`; prefer non-destructive `diagnostics.get` sequence queries.
   - Messages include type, text, file, function, line number, and timestamp.
 
 ### Documentation
@@ -383,6 +408,12 @@ Method failures return JSON-RPC errors. Besides standard JSON-RPC codes, MCP-ori
 - `-32004`: conflict
 - `-32005`: not found
 - `-32006`: internal error
+- `-32007`: disconnected (retryable)
+- `-32008`: timeout (retryable)
+- `-32009`: stale editor session (retryable)
+- `-32010`: stale runtime
+
+Error `data` contains a stable string `code`, human-readable `message`, `operation`, `session_id`, optional `run_id`, `retryable`, and optional conflict/Godot details.
 
 ## OpenCode bridge setup
 
