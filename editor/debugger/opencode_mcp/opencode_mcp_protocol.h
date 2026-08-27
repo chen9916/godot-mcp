@@ -102,6 +102,7 @@ private:
 
 	Dictionary _method_session_info() const;
 	Dictionary _method_scene_get_active(int &r_error_code, String &r_error_message) const;
+	Dictionary _method_scene_list_open(int &r_error_code, String &r_error_message) const;
 	Dictionary _method_scene_get_tree(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_node_get_property(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	Dictionary _method_node_list_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
@@ -170,13 +171,14 @@ private:
 	Dictionary _method_theme_set_overrides(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 
 	String _resolve_script_workspace(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
+	Node *_get_edited_scene_root(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;
 	bool _resolve_active_script_editor_context(ScriptEditorBase *&r_editor, Ref<Script> &r_script, String &r_script_path, String &r_display_name, bool &r_is_unsaved, String &r_source, bool &r_has_text_buffer, int &r_error_code, String &r_error_message) const;
 	bool _resolve_open_script_editor_context(const Ref<Script> &p_script, const String &p_script_path, ScriptEditorBase *&r_editor, String &r_source, bool &r_has_text_buffer) const;
 	bool _validate_script_editor_target(const String &p_requested_script_path, const String &p_active_script_path, int &r_error_code, String &r_error_message) const;
 	bool _set_script_editor_buffer_source(ScriptEditorBase *p_editor, const String &p_source) const;
 	Ref<Script> _resolve_active_script_editor_script(String &r_display_name, bool &r_is_unsaved, int &r_error_code, String &r_error_message) const;
-	Node *_resolve_selected_scene_node(String &r_node_path, int &r_error_code, String &r_error_message) const;
-	Ref<Script> _resolve_selected_scene_node_script(String &r_script_path, String &r_node_path, int &r_error_code, String &r_error_message) const;
+	Node *_resolve_selected_scene_node(const Dictionary &p_params, String &r_node_path, int &r_error_code, String &r_error_message) const;
+	Ref<Script> _resolve_selected_scene_node_script(const Dictionary &p_params, String &r_script_path, String &r_node_path, int &r_error_code, String &r_error_message) const;
 	Ref<Script> _find_script_in_tree(Node *p_root, const String &p_script_path) const;
 	Ref<Script> _resolve_script(const Dictionary &p_params, String &r_script_path, int &r_error_code, String &r_error_message) const;
 

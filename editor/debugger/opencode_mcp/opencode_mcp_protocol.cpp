@@ -76,6 +76,7 @@ constexpr const char *SCRIPT_WORKSPACE_AUTO = "auto";
 constexpr const char *SCRIPT_WORKSPACE_SCENE_VIEW = "scene_view";
 constexpr const char *SCRIPT_WORKSPACE_SCRIPT_EDITOR = "script_editor";
 
+#ifdef MODULE_GDSCRIPT_ENABLED
 static bool _is_identifier_char(char32_t p_char) {
 	return p_char == '_' || (p_char >= '0' && p_char <= '9') || (p_char >= 'A' && p_char <= 'Z') || (p_char >= 'a' && p_char <= 'z');
 }
@@ -166,6 +167,7 @@ static String _lookup_result_type_to_string(ScriptLanguage::LookupResultType p_t
 
 	return "unknown";
 }
+#endif
 
 static ScriptLanguage *_find_script_language(const String &p_language_name) {
 	const String normalized = p_language_name.to_lower();
@@ -748,10 +750,6 @@ static bool _coerce_property_value(const Variant &p_existing_value, const Varian
 	return false;
 }
 
-static bool _coerce_property_value(const Variant &p_existing_value, const Variant &p_requested_value, Variant &r_coerced_value, String &r_error_message) {
-	return _coerce_property_value(p_existing_value, p_requested_value, String(), String(), r_coerced_value, r_error_message);
-}
-
 static bool _serialize_resource_reference(const Variant &p_value, Variant &r_serialized) {
 	if (p_value.get_type() != Variant::OBJECT) {
 		r_serialized = p_value;
@@ -1303,7 +1301,7 @@ void OpenCodeMCPProtocol::poll() {
 }
 
 String OpenCodeMCPProtocol::_capability_for_method(const String &p_method) const {
-	if (p_method == "scene.get_active" || p_method == "scene.get_tree" || p_method == "node.get_property" ||
+	if (p_method == "scene.get_active" || p_method == "scene.list_open" || p_method == "scene.get_tree" || p_method == "node.get_property" ||
 			p_method == "node.list_properties" || p_method == "node.get_properties" || p_method == "node.get_properties_batch" ||
 			p_method == "scene.list" || p_method == "node.find" || p_method == "node.get_groups" ||
 			p_method == "signal.list" || p_method == "signal.get_connections" ||
@@ -1453,6 +1451,9 @@ Dictionary OpenCodeMCPProtocol::_dispatch_method(const String &p_method, const D
 	}
 	if (p_method == "scene.get_active") {
 		return _method_scene_get_active(r_error_code, r_error_message);
+	}
+	if (p_method == "scene.list_open") {
+		return _method_scene_list_open(r_error_code, r_error_message);
 	}
 	if (p_method == "scene.get_tree") {
 		return _method_scene_get_tree(p_params, r_error_code, r_error_message);
@@ -1646,6 +1647,34 @@ Node *OpenCodeMCPProtocol::_get_edited_scene_root() const {
 	return EditorNode::get_singleton()->get_edited_scene();
 }
 
+Node *OpenCodeMCPProtocol::_get_edited_scene_root(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
+	Node *root = _get_edited_scene_root();
+	String expected_scene_path = p_params.get("expected_scene_path", String());
+	if (expected_scene_path.is_empty()) {
+		return root;
+	}
+
+	if (!expected_scene_path.begins_with("res://")) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: expected_scene_path must start with res://";
+		return nullptr;
+	}
+
+	if (!root) {
+		r_error_code = ERROR_CONFLICT;
+		r_error_message = "CONFLICT: active edited scene changed and no longer matches expected_scene_path.";
+		return nullptr;
+	}
+
+	if (root->get_scene_file_path() != expected_scene_path) {
+		r_error_code = ERROR_CONFLICT;
+		r_error_message = "CONFLICT: active edited scene does not match expected_scene_path.";
+		return nullptr;
+	}
+
+	return root;
+}
+
 Node *OpenCodeMCPProtocol::_resolve_node_path(const String &p_node_path, Node *p_root) const {
 	if (!p_root) {
 		return nullptr;
@@ -1684,7 +1713,10 @@ Ref<Script> OpenCodeMCPProtocol::_resolve_script(const Dictionary &p_params, Str
 
 	Node *root = nullptr;
 	if (!node_path.is_empty()) {
-		root = _get_edited_scene_root();
+		root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+		if (r_error_code != 0) {
+			return Ref<Script>();
+		}
 		if (!root) {
 			r_error_code = ERROR_NOT_FOUND;
 			r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -1726,7 +1758,10 @@ Ref<Script> OpenCodeMCPProtocol::_resolve_script(const Dictionary &p_params, Str
 		script = ResourceCache::get_ref(script_path);
 		if (script.is_null()) {
 			if (!root) {
-				root = _get_edited_scene_root();
+				root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+				if (r_error_code != 0) {
+					return Ref<Script>();
+				}
 			}
 			if (root) {
 				script = _find_script_in_tree(root, script_path);
@@ -1759,7 +1794,7 @@ String OpenCodeMCPProtocol::_resolve_script_workspace(const Dictionary &p_params
 	if (workspace == SCRIPT_WORKSPACE_AUTO) {
 		EditorNode *editor_node = EditorNode::get_singleton();
 		EditorMainScreen *main_screen = editor_node ? editor_node->get_editor_main_screen() : nullptr;
-		if (main_screen && main_screen->get_selected_index() == EditorMainScreen::EDITOR_SCRIPT) {
+		if (main_screen && main_screen->get_selected_plugin() == ScriptEditorPlugin::get_singleton()) {
 			return SCRIPT_WORKSPACE_SCRIPT_EDITOR;
 		}
 		return SCRIPT_WORKSPACE_SCENE_VIEW;
@@ -1891,8 +1926,11 @@ Ref<Script> OpenCodeMCPProtocol::_resolve_active_script_editor_script(String &r_
 	return script;
 }
 
-Node *OpenCodeMCPProtocol::_resolve_selected_scene_node(String &r_node_path, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+Node *OpenCodeMCPProtocol::_resolve_selected_scene_node(const Dictionary &p_params, String &r_node_path, int &r_error_code, String &r_error_message) const {
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return nullptr;
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -1930,8 +1968,8 @@ Node *OpenCodeMCPProtocol::_resolve_selected_scene_node(String &r_node_path, int
 	return node;
 }
 
-Ref<Script> OpenCodeMCPProtocol::_resolve_selected_scene_node_script(String &r_script_path, String &r_node_path, int &r_error_code, String &r_error_message) const {
-	Node *node = _resolve_selected_scene_node(r_node_path, r_error_code, r_error_message);
+Ref<Script> OpenCodeMCPProtocol::_resolve_selected_scene_node_script(const Dictionary &p_params, String &r_script_path, String &r_node_path, int &r_error_code, String &r_error_message) const {
+	Node *node = _resolve_selected_scene_node(p_params, r_node_path, r_error_code, r_error_message);
 	if (!node) {
 		return Ref<Script>();
 	}
@@ -1960,6 +1998,41 @@ Dictionary OpenCodeMCPProtocol::_method_scene_get_active(int &r_error_code, Stri
 	data["path"] = root->get_scene_file_path();
 	data["node_path"] = ".";
 	data["class"] = root->get_class();
+	return _make_ok(data);
+}
+
+Dictionary OpenCodeMCPProtocol::_method_scene_list_open(int &r_error_code, String &r_error_message) const {
+	EditorNode *editor_node = EditorNode::get_singleton();
+	if (!editor_node) {
+		r_error_code = ERROR_INTERNAL;
+		r_error_message = "INTERNAL: EditorNode not available.";
+		return Dictionary();
+	}
+
+	EditorData &editor_data = EditorNode::get_editor_data();
+	const int active_scene_index = editor_data.get_edited_scene();
+	Array scenes;
+	for (int i = 0; i < editor_data.get_edited_scene_count(); i++) {
+		Node *root = editor_data.get_edited_scene_root(i);
+		Dictionary scene_info;
+		scene_info["tab_index"] = i;
+		scene_info["is_active"] = i == active_scene_index;
+		scene_info["path"] = editor_data.get_scene_path(i);
+		scene_info["name"] = root ? String(root->get_name()) : String();
+		scene_info["class"] = root ? String(root->get_class()) : String();
+		scene_info["is_unsaved"] = root ? root->get_scene_file_path().is_empty() : editor_data.get_scene_path(i).is_empty();
+		scenes.push_back(scene_info);
+	}
+
+	Dictionary data;
+	data["active_scene_index"] = active_scene_index;
+	if (active_scene_index >= 0 && active_scene_index < editor_data.get_edited_scene_count()) {
+		data["active_scene_path"] = editor_data.get_scene_path(active_scene_index);
+	} else {
+		data["active_scene_path"] = String();
+	}
+	data["count"] = scenes.size();
+	data["scenes"] = scenes;
 	return _make_ok(data);
 }
 
@@ -2008,7 +2081,10 @@ Dictionary OpenCodeMCPProtocol::_serialize_node(Node *p_node, Node *p_root, int 
 }
 
 Dictionary OpenCodeMCPProtocol::_method_scene_get_tree(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -2051,7 +2127,10 @@ Dictionary OpenCodeMCPProtocol::_method_scene_get_tree(const Dictionary &p_param
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_get_property(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -2101,7 +2180,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_property(const Dictionary &p_pa
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_list_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -2148,7 +2230,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_list_properties(const Dictionary &p
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_get_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -2216,7 +2301,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_properties(const Dictionary &p_
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_get_properties_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -2338,7 +2426,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_properties_batch(const Dictiona
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_create_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -2787,7 +2878,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_create_from_template(const Dictiona
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_create(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -2886,7 +2980,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_create(const Dictionary &p_params, 
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_duplicate_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -3283,7 +3380,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_duplicate(const Dictionary &p_param
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_delete_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -3510,7 +3610,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_delete_batch(const Dictionary &p_pa
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_delete(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -3566,7 +3669,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_delete(const Dictionary &p_params, 
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_reparent(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -3685,7 +3791,10 @@ bool OpenCodeMCPProtocol::_validate_property_value(Node *p_node, const StringNam
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_set_properties(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -3764,7 +3873,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_set_properties(const Dictionary &p_
 }
 
 Dictionary OpenCodeMCPProtocol::_method_node_set_properties_batch(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -4018,7 +4130,7 @@ Dictionary OpenCodeMCPProtocol::_method_script_get_active(const Dictionary &p_pa
 
 	String script_path;
 	String node_path;
-	Ref<Script> script = _resolve_selected_scene_node_script(script_path, node_path, r_error_code, r_error_message);
+	Ref<Script> script = _resolve_selected_scene_node_script(p_params, script_path, node_path, r_error_code, r_error_message);
 	if (script.is_null()) {
 		return Dictionary();
 	}
@@ -4224,7 +4336,7 @@ Dictionary OpenCodeMCPProtocol::_method_script_apply_text_edits(const Dictionary
 		script_path = active_script_path;
 		has_script_editor_source = has_text_buffer;
 	} else if (script_path.is_empty() && node_path.is_empty()) {
-		script = _resolve_selected_scene_node_script(script_path, node_path, r_error_code, r_error_message);
+		script = _resolve_selected_scene_node_script(p_params, script_path, node_path, r_error_code, r_error_message);
 		if (script.is_null()) {
 			return Dictionary();
 		}
@@ -4352,7 +4464,10 @@ Dictionary OpenCodeMCPProtocol::_method_script_attach(const Dictionary &p_params
 }
 
 Dictionary OpenCodeMCPProtocol::_method_script_attach_external(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -4366,7 +4481,7 @@ Dictionary OpenCodeMCPProtocol::_method_script_attach_external(const Dictionary 
 
 	String node_path = p_params.get("node_path", String());
 	if (node_path.is_empty()) {
-		if (!_resolve_selected_scene_node(node_path, r_error_code, r_error_message)) {
+		if (!_resolve_selected_scene_node(p_params, node_path, r_error_code, r_error_message)) {
 			return Dictionary();
 		}
 	}
@@ -4422,7 +4537,10 @@ Dictionary OpenCodeMCPProtocol::_method_script_attach_external(const Dictionary 
 }
 
 Dictionary OpenCodeMCPProtocol::_method_script_attach_built_in(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -4436,7 +4554,7 @@ Dictionary OpenCodeMCPProtocol::_method_script_attach_built_in(const Dictionary 
 
 	String node_path = p_params.get("node_path", String());
 	if (node_path.is_empty()) {
-		if (!_resolve_selected_scene_node(node_path, r_error_code, r_error_message)) {
+		if (!_resolve_selected_scene_node(p_params, node_path, r_error_code, r_error_message)) {
 			return Dictionary();
 		}
 	}
@@ -4772,7 +4890,10 @@ Dictionary OpenCodeMCPProtocol::_method_lsp_query(const Dictionary &p_params, in
 
 Dictionary OpenCodeMCPProtocol::_method_resource_save(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
 	String path = p_params.get("path", String());
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 
 	if (path.is_empty()) {
 		if (!root || root->get_scene_file_path().is_empty()) {
@@ -4797,10 +4918,23 @@ Dictionary OpenCodeMCPProtocol::_method_resource_save(const Dictionary &p_params
 			return Dictionary();
 		}
 
+		EditorNode *editor_node = EditorNode::get_singleton();
+		if (!editor_node) {
+			r_error_code = ERROR_INTERNAL;
+			r_error_message = "INTERNAL: EditorNode not available.";
+			return Dictionary();
+		}
+
 		EditorData &editor_data = EditorNode::get_editor_data();
 		int scene_idx = editor_data.get_edited_scene_from_path(path);
 		if (scene_idx < 0 && root->get_scene_file_path() == path) {
 			scene_idx = editor_data.get_edited_scene();
+		}
+
+		if (scene_idx < 0 && !root->get_scene_file_path().is_empty() && root->get_scene_file_path() != path) {
+			r_error_code = ERROR_NOT_FOUND;
+			r_error_message = "NOT_FOUND: scene path is not the active edited scene and is not currently open in the editor.";
+			return Dictionary();
 		}
 
 		const uint64_t disk_modified_time = FileAccess::get_modified_time(path);
@@ -4813,8 +4947,13 @@ Dictionary OpenCodeMCPProtocol::_method_resource_save(const Dictionary &p_params
 			}
 		}
 
-		// Save through the full editor path to match manual scene saves.
-		EditorNode::get_singleton()->save_scene_to_path(path, true);
+		// `save_scene_to_path()` saves the current scene tab. When a path targets a different
+		// open scene, save that specific scene instead of whichever tab happens to be active.
+		if (scene_idx >= 0 && scene_idx != editor_data.get_edited_scene()) {
+			editor_node->save_scene_if_open(path);
+		} else {
+			editor_node->save_scene_to_path(path, true);
+		}
 
 		// Keep external-change detection in sync for the just-saved scene.
 		scene_idx = editor_data.get_edited_scene_from_path(path);
@@ -4872,7 +5011,10 @@ Dictionary OpenCodeMCPProtocol::_method_resource_save(const Dictionary &p_params
 
 Dictionary OpenCodeMCPProtocol::_method_resource_reload(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
 	String path = p_params.get("path", String());
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 
 	if (path.is_empty()) {
 		if (!root || root->get_scene_file_path().is_empty()) {
@@ -5132,7 +5274,10 @@ Dictionary OpenCodeMCPProtocol::_method_scene_create(const Dictionary &p_params,
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_scene_instantiate(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -5210,7 +5355,10 @@ Dictionary OpenCodeMCPProtocol::_method_scene_instantiate(const Dictionary &p_pa
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_node_find(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -5267,7 +5415,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_find(const Dictionary &p_params, in
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_node_get_groups(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -5311,7 +5462,10 @@ Dictionary OpenCodeMCPProtocol::_method_node_get_groups(const Dictionary &p_para
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_node_set_groups(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -5698,7 +5852,10 @@ Dictionary OpenCodeMCPProtocol::_method_resource_set_properties(const Dictionary
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_signal_list(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -5750,7 +5907,10 @@ Dictionary OpenCodeMCPProtocol::_method_signal_list(const Dictionary &p_params, 
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_signal_get_connections(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -5815,7 +5975,10 @@ Dictionary OpenCodeMCPProtocol::_method_signal_get_connections(const Dictionary 
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_signal_connect(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -5891,7 +6054,10 @@ Dictionary OpenCodeMCPProtocol::_method_signal_connect(const Dictionary &p_param
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_signal_disconnect(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -7032,7 +7198,10 @@ Dictionary OpenCodeMCPProtocol::_method_shader_edit(const Dictionary &p_params, 
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_theme_get_overrides(const Dictionary &p_params, int &r_error_code, String &r_error_message) const {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";
@@ -7152,7 +7321,10 @@ Dictionary OpenCodeMCPProtocol::_method_theme_get_overrides(const Dictionary &p_
 // ---------------------------------------------------------------------------
 
 Dictionary OpenCodeMCPProtocol::_method_theme_set_overrides(const Dictionary &p_params, int &r_error_code, String &r_error_message) {
-	Node *root = _get_edited_scene_root();
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
 	if (!root) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: No edited scene is currently open.";

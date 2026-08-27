@@ -89,6 +89,8 @@ Documentation:
 
 - `scene.get_active`
   - Returns active edited scene identity (name, scene path, root node path, class).
+- `scene.list_open`
+  - Returns currently open scene tabs, the active tab index, and per-scene path/name/class metadata.
 - `scene.get_tree`
   - Returns bounded tree snapshot from edited scene root.
   - Optional params: `root_path` (default `"."`), `max_depth` (default `6`), `max_nodes` (default `1500`).
@@ -368,6 +370,9 @@ Documentation:
   - Wrapped in undo/redo.
 
 Scene/node mutations, resource property changes, signal connections, shader edits, and theme overrides are wrapped through `EditorUndoRedoManager` actions.
+
+Scene-relative methods accept optional `expected_scene_path`.
+When provided, the call fails with `CONFLICT` if the active edited scene changed before the operation runs.
 
 ## Error model
 
