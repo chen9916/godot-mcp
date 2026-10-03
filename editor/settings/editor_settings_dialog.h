@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "editor/debugger/godot_mcp/godot_mcp_config_exporter.h"
 #include "editor/inspector/editor_inspector.h"
 #include "scene/gui/dialogs.h"
 
@@ -55,7 +56,11 @@ class EditorSettingsDialog : public AcceptDialog {
 
 	LineEdit *search_box = nullptr;
 	CheckButton *advanced_switch = nullptr;
-	Button *opencode_mcp_refresh_button = nullptr;
+	Control *mcp_controls = nullptr;
+	Button *mcp_config_button = nullptr;
+	Label *mcp_status = nullptr;
+	AcceptDialog *mcp_result = nullptr;
+	GodotMCPConfigExporter mcp_config_exporter;
 	SectionedInspector *inspector = nullptr;
 	EditorEventSearchBar *shortcut_search_bar = nullptr;
 
@@ -103,7 +108,9 @@ class EditorSettingsDialog : public AcceptDialog {
 
 	void _tabs_tab_changed(int p_tab);
 	void _editor_settings_category_changed(const String &p_category);
-	void _refresh_opencode_mcp_session();
+	void _refresh_mcp_session();
+	void _copy_mcp_configuration();
+	void _finish_mcp_config_export(bool p_success);
 	void _focus_current_search_box();
 
 	void _advanced_toggled(bool p_button_pressed);

@@ -6,44 +6,18 @@
   </a>
 </p>
 
-## OpenCode MCP Fork Notes
+## Godot MCP fork
 
-This fork adds built-in OpenCode MCP support for local editor-driven workflows.
+This fork adds local editor and runtime automation through a standard MCP stdio
+bridge. It works with compatible MCP clients. The supported release scope and
+verification evidence are recorded in the MCP status document below.
 
-- Godot editor-side MCP server: `editor/debugger/opencode_mcp`
-- OpenCode stdio bridge: `misc/opencode_mcp_bridge`
-- Engine MCP protocol docs: `editor/debugger/opencode_mcp/README.md`
-- Bridge docs and troubleshooting: `misc/opencode_mcp_bridge/README.md`
-
-### Quick setup
-
-1. Build the Godot editor from this repo root:
-
-```bash
-python -m pip install "scons>=4.0"
-scons platform=windows target=editor dev_mode=yes
-```
-
-For other platforms, swap `platform=windows` for `linuxbsd` or `macos`.
-Built editor binaries are written to `bin/`.
-
-2. Build the bridge package:
-
-```bash
-cd misc/opencode_mcp_bridge
-npm ci
-npm run build
-```
-
-3. Install OpenCode MCP config:
-
-```bash
-node dist/main.js --install-opencode-config --project-root "<path-to-godot-project>"
-```
-
-4. Restart OpenCode.
-5. In Godot Editor Settings, enable `network/opencode_mcp/enabled`.
-6. If needed, click `Refresh MCP Session` under `network/opencode_mcp`.
+- [Connection setup and troubleshooting](misc/godot_mcp_bridge/README.md)
+- [Editor endpoint and RPC methods](editor/debugger/godot_mcp/README.md)
+- [Automation tool schemas](editor/debugger/godot_mcp/AUTOMATION_TOOLS_V2.md)
+- [Architecture](editor/debugger/godot_mcp/ARCHITECTURE.md)
+- [Build and test procedures](misc/godot_mcp_bridge/test/README.md)
+- [Remaining work and verification evidence](MCP_STATUS.md)
 
 ## 2D and 3D cross-platform game engine
 

@@ -1,0 +1,409 @@
+{
+  "fixture": "Capacitor Primer Burst",
+  "description": "A representative particle-heavy 3D VFX patch with 23 nodes and 20 embedded resources.",
+  "operations": [
+    {
+      "op": "create_resource",
+      "id": "core_material",
+      "type": "StandardMaterial3D",
+      "properties": {
+        "shading_mode": 0,
+        "emission_enabled": true,
+        "emission": { "__type": "Color", "value": [0.08, 0.75, 1.0, 1.0] },
+        "emission_energy_multiplier": 8.0,
+        "albedo_color": { "__type": "Color", "value": [0.02, 0.2, 0.3, 1.0] }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "spark_material",
+      "type": "StandardMaterial3D",
+      "properties": {
+        "shading_mode": 0,
+        "emission_enabled": true,
+        "emission": { "__type": "Color", "value": [0.45, 0.9, 1.0, 1.0] },
+        "emission_energy_multiplier": 12.0
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "smoke_material",
+      "type": "StandardMaterial3D",
+      "properties": {
+        "shading_mode": 0,
+        "albedo_color": { "__type": "Color", "value": [0.08, 0.12, 0.16, 0.65] }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "ring_material",
+      "type": "StandardMaterial3D",
+      "properties": {
+        "shading_mode": 0,
+        "emission_enabled": true,
+        "emission": { "__type": "Color", "value": [0.1, 0.55, 1.0, 1.0] },
+        "emission_energy_multiplier": 5.0
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "core_mesh",
+      "type": "SphereMesh",
+      "properties": {
+        "material": { "resource_ref": "core_material" },
+        "radius": 0.22,
+        "height": 0.44
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "flash_mesh",
+      "type": "SphereMesh",
+      "properties": {
+        "material": { "resource_ref": "spark_material" },
+        "radius": 0.32,
+        "height": 0.64
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "spark_mesh",
+      "type": "BoxMesh",
+      "properties": {
+        "material": { "resource_ref": "spark_material" },
+        "size": { "__type": "Vector3", "value": [0.018, 0.018, 0.16] }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "smoke_mesh",
+      "type": "QuadMesh",
+      "properties": {
+        "material": { "resource_ref": "smoke_material" },
+        "size": { "__type": "Vector2", "value": [0.2, 0.2] }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "ring_mesh",
+      "type": "TorusMesh",
+      "properties": {
+        "material": { "resource_ref": "ring_material" },
+        "inner_radius": 0.34,
+        "outer_radius": 0.42
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "scale_curve",
+      "type": "Curve",
+      "properties": {
+        "point_count": 2,
+        "bake_resolution": 64
+      }
+    },
+    {
+      "op": "update_resource",
+      "resource": { "resource_ref": "scale_curve" },
+      "properties": {
+        "point_0/position": { "__type": "Vector2", "value": [0.0, 1.0] },
+        "point_1/position": { "__type": "Vector2", "value": [1.0, 0.0] }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "scale_curve_texture",
+      "type": "CurveTexture",
+      "properties": {
+        "curve": { "resource_ref": "scale_curve" }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "color_gradient",
+      "type": "Gradient"
+    },
+    {
+      "op": "create_resource",
+      "id": "color_ramp",
+      "type": "GradientTexture1D",
+      "properties": {
+        "gradient": { "resource_ref": "color_gradient" }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "core_process",
+      "type": "ParticleProcessMaterial",
+      "properties": {
+        "direction": { "__type": "Vector3", "value": [0.0, 1.0, 0.0] },
+        "spread": 180.0,
+        "gravity": { "__type": "Vector3", "value": [0.0, 0.0, 0.0] },
+        "initial_velocity_min": 0.8,
+        "initial_velocity_max": 1.6,
+        "scale_curve": { "resource_ref": "scale_curve_texture" },
+        "color_ramp": { "resource_ref": "color_ramp" }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "spark_process",
+      "type": "ParticleProcessMaterial",
+      "properties": {
+        "direction": { "__type": "Vector3", "value": [0.0, 1.0, 0.0] },
+        "spread": 70.0,
+        "gravity": { "__type": "Vector3", "value": [0.0, -2.5, 0.0] },
+        "initial_velocity_min": 5.0,
+        "initial_velocity_max": 8.0,
+        "scale_curve": { "resource_ref": "scale_curve_texture" }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "smoke_process",
+      "type": "ParticleProcessMaterial",
+      "properties": {
+        "direction": { "__type": "Vector3", "value": [0.0, 1.0, 0.0] },
+        "spread": 45.0,
+        "gravity": { "__type": "Vector3", "value": [0.0, 0.35, 0.0] },
+        "initial_velocity_min": 0.25,
+        "initial_velocity_max": 0.7,
+        "scale_curve": { "resource_ref": "scale_curve_texture" }
+      }
+    },
+    {
+      "op": "create_resource",
+      "id": "burst_shape",
+      "type": "SphereShape3D",
+      "properties": { "radius": 0.5 }
+    },
+    {
+      "op": "create_resource",
+      "id": "bounds_shape",
+      "type": "BoxShape3D",
+      "properties": { "size": { "__type": "Vector3", "value": [1.2, 1.2, 1.2] } }
+    },
+    {
+      "op": "create_resource",
+      "id": "burst_animation",
+      "type": "Animation",
+      "properties": { "length": 0.8, "loop_mode": 0 }
+    },
+    {
+      "op": "create_resource",
+      "id": "burst_library",
+      "type": "AnimationLibrary",
+      "properties": { "_data": { "burst": { "resource_ref": "burst_animation" } } }
+    },
+    {
+      "op": "create_node",
+      "id": "effect_root",
+      "parent": ".",
+      "name": "CapacitorPrimerBurst",
+      "type": "Node3D",
+      "groups": ["vfx", "one_shot_effect"]
+    },
+    {
+      "op": "create_node",
+      "id": "core_node",
+      "parent": { "node_ref": "effect_root" },
+      "name": "Core",
+      "type": "MeshInstance3D",
+      "properties": { "mesh": { "resource_ref": "core_mesh" } }
+    },
+    {
+      "op": "create_node",
+      "id": "flash_node",
+      "parent": { "node_ref": "effect_root" },
+      "name": "Flash",
+      "type": "MeshInstance3D",
+      "properties": { "mesh": { "resource_ref": "flash_mesh" } }
+    },
+    {
+      "op": "create_node",
+      "id": "ring_node",
+      "parent": { "node_ref": "effect_root" },
+      "name": "ShockRing",
+      "type": "MeshInstance3D",
+      "properties": { "mesh": { "resource_ref": "ring_mesh" } }
+    },
+    {
+      "op": "create_node",
+      "id": "particles_root",
+      "parent": { "node_ref": "effect_root" },
+      "name": "Particles",
+      "type": "Node3D"
+    },
+    {
+      "op": "create_node",
+      "id": "spark_particles",
+      "parent": { "node_ref": "particles_root" },
+      "name": "SparkParticles",
+      "type": "GPUParticles3D",
+      "properties": {
+        "amount": 96,
+        "lifetime": 0.65,
+        "one_shot": true,
+        "explosiveness": 0.95,
+        "process_material": { "resource_ref": "spark_process" },
+        "draw_pass_1": { "resource_ref": "spark_mesh" }
+      }
+    },
+    {
+      "op": "create_node",
+      "id": "smoke_particles",
+      "parent": { "node_ref": "particles_root" },
+      "name": "SmokeParticles",
+      "type": "GPUParticles3D",
+      "properties": {
+        "amount": 28,
+        "lifetime": 1.4,
+        "one_shot": true,
+        "explosiveness": 0.8,
+        "process_material": { "resource_ref": "smoke_process" },
+        "draw_pass_1": { "resource_ref": "smoke_mesh" }
+      }
+    },
+    {
+      "op": "create_node",
+      "id": "core_particles",
+      "parent": { "node_ref": "particles_root" },
+      "name": "CoreParticles",
+      "type": "GPUParticles3D",
+      "properties": {
+        "amount": 48,
+        "lifetime": 0.45,
+        "one_shot": true,
+        "explosiveness": 1.0,
+        "sub_emitter": { "node_ref": "spark_particles" },
+        "process_material": { "resource_ref": "core_process" },
+        "draw_pass_1": { "resource_ref": "core_mesh" }
+      }
+    },
+    {
+      "op": "create_node",
+      "id": "burst_light",
+      "parent": { "node_ref": "effect_root" },
+      "name": "BurstLight",
+      "type": "OmniLight3D",
+      "properties": {
+        "light_color": { "__type": "Color", "value": [0.2, 0.8, 1.0, 1.0] },
+        "light_energy": 6.0,
+        "omni_range": 4.0
+      }
+    },
+    {
+      "op": "create_node",
+      "id": "collision_body",
+      "parent": { "node_ref": "effect_root" },
+      "name": "CollisionBody",
+      "type": "StaticBody3D"
+    },
+    {
+      "op": "create_node",
+      "id": "collision_shape",
+      "parent": { "node_ref": "collision_body" },
+      "name": "CollisionShape3D",
+      "type": "CollisionShape3D",
+      "properties": { "shape": { "resource_ref": "burst_shape" } }
+    },
+    {
+      "op": "create_node",
+      "id": "bounds_shape_node",
+      "parent": { "node_ref": "collision_body" },
+      "name": "BoundsShape",
+      "type": "CollisionShape3D",
+      "properties": { "shape": { "resource_ref": "bounds_shape" } }
+    },
+    {
+      "op": "create_node",
+      "id": "animation_player",
+      "parent": { "node_ref": "effect_root" },
+      "name": "AnimationPlayer",
+      "type": "AnimationPlayer",
+      "properties": { "libraries": { "": { "resource_ref": "burst_library" } } }
+    },
+    {
+      "op": "create_node",
+      "id": "spark_anchor",
+      "parent": { "node_ref": "effect_root" },
+      "name": "SparkAnchor",
+      "type": "Marker3D",
+      "properties": { "position": { "__type": "Vector3", "value": [0.0, 0.3, 0.0] } }
+    },
+    {
+      "op": "create_node",
+      "id": "smoke_anchor",
+      "parent": { "node_ref": "effect_root" },
+      "name": "SmokeAnchor",
+      "type": "Marker3D",
+      "properties": { "position": { "__type": "Vector3", "value": [0.0, -0.15, 0.0] } }
+    },
+    {
+      "op": "create_node",
+      "id": "debris_anchor",
+      "parent": { "node_ref": "effect_root" },
+      "name": "DebrisAnchor",
+      "type": "Marker3D"
+    },
+    {
+      "op": "create_node",
+      "id": "camera_target",
+      "parent": { "node_ref": "effect_root" },
+      "name": "CameraTarget",
+      "type": "Marker3D"
+    },
+    {
+      "op": "create_node",
+      "id": "halo_a",
+      "parent": { "node_ref": "effect_root" },
+      "name": "HaloA",
+      "type": "MeshInstance3D",
+      "properties": {
+        "mesh": { "resource_ref": "ring_mesh" },
+        "scale": { "__type": "Vector3", "value": [0.7, 0.7, 0.7] }
+      }
+    },
+    {
+      "op": "create_node",
+      "id": "halo_b",
+      "parent": { "node_ref": "effect_root" },
+      "name": "HaloB",
+      "type": "MeshInstance3D",
+      "properties": {
+        "mesh": { "resource_ref": "ring_mesh" },
+        "scale": { "__type": "Vector3", "value": [1.35, 1.35, 1.35] }
+      }
+    },
+    {
+      "op": "create_node",
+      "id": "cleanup_timer",
+      "parent": { "node_ref": "effect_root" },
+      "name": "CleanupTimer",
+      "type": "Timer",
+      "properties": { "wait_time": 2.0, "one_shot": true, "autostart": true }
+    },
+    {
+      "op": "create_node",
+      "id": "lifetime_marker",
+      "parent": { "node_ref": "effect_root" },
+      "name": "LifetimeMarker",
+      "type": "Node3D"
+    },
+    {
+      "op": "create_node",
+      "id": "debug_marker",
+      "parent": { "node_ref": "effect_root" },
+      "name": "DebugMarker",
+      "type": "Marker3D",
+      "groups": ["vfx_debug"]
+    },
+    {
+      "op": "create_node",
+      "id": "audio_origin",
+      "parent": { "node_ref": "effect_root" },
+      "name": "AudioOrigin",
+      "type": "Marker3D"
+    }
+  ]
+}

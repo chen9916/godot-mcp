@@ -50,6 +50,9 @@ logs/
 tests/data/*.translation
 tests/data/crypto/out*
 
+# Local MCP distribution packages and verification reports.
+/artifacts/
+
 ############################
 ### General build output ###
 ############################

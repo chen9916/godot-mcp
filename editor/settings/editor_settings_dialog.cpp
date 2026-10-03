@@ -36,8 +36,9 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/os/keyboard.h"
-#include "editor/debugger/opencode_mcp/opencode_mcp_server.h"
+#include "core/os/os.h"
 #include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/godot_mcp/godot_mcp_server.h"
 #include "editor/editor_log.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
@@ -59,6 +60,7 @@
 #include "scene/gui/texture_rect.h"
 #include "scene/gui/tree.h"
 #include "scene/main/timer.h"
+#include "servers/display/display_server.h"
 
 void EditorSettingsDialog::ok_pressed() {
 	if (!EditorSettings::get_singleton()) {
@@ -295,6 +297,12 @@ void EditorSettingsDialog::_remove_setting_override(const String &p_setting) {
 
 void EditorSettingsDialog::_notification(int p_what) {
 	switch (p_what) {
+		case NOTIFICATION_INTERNAL_PROCESS: {
+			if (mcp_config_exporter.poll()) {
+				_finish_mcp_config_export(mcp_config_exporter.get_exit_code() == 0);
+			}
+		} break;
+
 		case NOTIFICATION_VISIBILITY_CHANGED: {
 			if (!is_visible() && !_is_in_project_manager()) {
 				EditorSettings::get_singleton()->set_project_metadata("dialog_bounds", "editor_settings", Rect2(get_position(), get_size()));
@@ -922,22 +930,70 @@ void EditorSettingsDialog::_tabs_tab_changed(int p_tab) {
 }
 
 void EditorSettingsDialog::_editor_settings_category_changed(const String &p_category) {
-	if (!opencode_mcp_refresh_button) {
+	if (!mcp_controls) {
 		return;
 	}
 
 	const bool in_general_tab = tabs->get_current_tab_control() == tab_general;
-	opencode_mcp_refresh_button->set_visible(in_general_tab && p_category == "network/opencode_mcp");
+	mcp_controls->set_visible(in_general_tab && p_category == "network/godot_mcp");
 }
 
-void EditorSettingsDialog::_refresh_opencode_mcp_session() {
-	OpenCodeMCPServer *mcp_server = OpenCodeMCPServer::get_singleton();
+void EditorSettingsDialog::_refresh_mcp_session() {
+	GodotMCPServer *mcp_server = GodotMCPServer::get_singleton();
 	if (!mcp_server) {
-		EditorNode::get_log()->add_message("--- OpenCode MCP server plugin is unavailable ---", EditorLog::MSG_TYPE_WARNING);
+		EditorNode::get_log()->add_message("--- Godot MCP server plugin is unavailable ---", EditorLog::MSG_TYPE_WARNING);
 		return;
 	}
 
 	mcp_server->refresh_session_metadata();
+}
+
+void EditorSettingsDialog::_copy_mcp_configuration() {
+	if (mcp_config_exporter.is_running()) {
+		return;
+	}
+	const String editor_directory = OS::get_singleton()->get_executable_path().get_base_dir();
+	String bridge_script = EDITOR_GET("network/godot_mcp/bridge_script");
+	if (bridge_script.is_empty()) {
+		bridge_script = GodotMCPConfigExporter::find_bridge_script(editor_directory);
+	}
+	String node_executable = EDITOR_GET("network/godot_mcp/node_executable");
+	if (node_executable.is_empty()) {
+		node_executable = GodotMCPConfigExporter::find_node_executable(editor_directory);
+	}
+	if (mcp_config_exporter.start(bridge_script, node_executable) != OK) {
+		_finish_mcp_config_export(false);
+		return;
+	}
+	mcp_config_button->set_disabled(true);
+	mcp_status->set_text(TTR("Preparing Godot MCP connection..."));
+	set_process_internal(true);
+}
+
+void EditorSettingsDialog::_finish_mcp_config_export(bool p_success) {
+	set_process_internal(false);
+	mcp_config_button->set_disabled(false);
+	String summary;
+	if (p_success) {
+		EditorSettings::get_singleton()->set_setting("network/godot_mcp/enabled", true);
+		_settings_save();
+		_refresh_mcp_session();
+		inspector->get_inspector()->update_tree();
+		DisplayServer::get_singleton()->clipboard_set(mcp_config_exporter.get_output());
+		summary = TTR("MCP configuration copied. Paste it into your MCP client's settings.");
+	} else {
+		summary = TTR("Bridge setup failed. See the details below and try again.");
+	}
+	mcp_status->set_text(summary);
+	const String details = summary + "\n\n" + mcp_config_exporter.get_output();
+	mcp_result->set_title(p_success ? TTR("Godot MCP Ready") : TTR("Godot MCP Setup Failed"));
+	mcp_result->set_text(details);
+	if (is_visible()) {
+		mcp_result->popup_centered(Size2(660, 280) * EDSCALE);
+	}
+	if (EditorNode::get_log()) {
+		EditorNode::get_log()->add_message(details, p_success ? EditorLog::MSG_TYPE_EDITOR : EditorLog::MSG_TYPE_WARNING);
+	}
 }
 
 void EditorSettingsDialog::_update_dynamic_property_hints() {
@@ -1054,12 +1110,6 @@ EditorSettingsDialog::EditorSettingsDialog() {
 	advanced_switch->set_pressed(use_advanced);
 	advanced_switch->connect(SceneStringName(toggled), callable_mp(this, &EditorSettingsDialog::_advanced_toggled));
 
-	opencode_mcp_refresh_button = memnew(Button(TTRC("Refresh MCP Session")));
-	opencode_mcp_refresh_button->set_visible(false);
-	opencode_mcp_refresh_button->set_tooltip_text(TTRC("Rewrite OpenCode MCP session metadata now."));
-	opencode_mcp_refresh_button->connect(SceneStringName(pressed), callable_mp(this, &EditorSettingsDialog::_refresh_opencode_mcp_session));
-	hbc->add_child(opencode_mcp_refresh_button);
-
 	inspector = memnew(SectionedInspector);
 	inspector->get_inspector()->set_use_filter(true);
 	inspector->get_inspector()->set_mark_unsaved(false);
@@ -1073,6 +1123,29 @@ EditorSettingsDialog::EditorSettingsDialog() {
 	if (EDITOR_GET("interface/touchscreen/enable_touch_optimizations")) {
 		inspector->set_touch_dragger_enabled(true);
 	}
+
+	mcp_controls = memnew(VBoxContainer);
+	mcp_controls->hide();
+	tab_general->add_child(mcp_controls);
+	HBoxContainer *mcp_buttons = memnew(HBoxContainer);
+	mcp_controls->add_child(mcp_buttons);
+	mcp_config_button = memnew(Button(TTRC("Copy MCP Configuration")));
+	mcp_config_button->set_name("CopyMCPConfiguration");
+	mcp_config_button->set_tooltip_text(TTRC("Enable MCP and copy the stdio connection configuration for another compatible coding agent."));
+	mcp_config_button->connect(SceneStringName(pressed), callable_mp(this, &EditorSettingsDialog::_copy_mcp_configuration));
+	mcp_buttons->add_child(mcp_config_button);
+	Button *mcp_refresh_button = memnew(Button(TTRC("Refresh MCP Session")));
+	mcp_refresh_button->set_tooltip_text(TTRC("Rewrite Godot MCP session metadata now."));
+	mcp_refresh_button->connect(SceneStringName(pressed), callable_mp(this, &EditorSettingsDialog::_refresh_mcp_session));
+	mcp_buttons->add_child(mcp_refresh_button);
+	mcp_status = memnew(Label(TTRC("Copy the MCP connection configuration into your MCP client settings. Copy it again after moving Godot to refresh the paths.")));
+	mcp_status->set_name("GodotMCPStatus");
+	mcp_status->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	mcp_controls->add_child(mcp_status);
+	mcp_result = memnew(AcceptDialog);
+	mcp_result->get_label()->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	mcp_result->get_label()->set_custom_minimum_size(Size2(600, 180) * EDSCALE);
+	add_child(mcp_result);
 
 	restart_container = memnew(PanelContainer);
 	tab_general->add_child(restart_container);

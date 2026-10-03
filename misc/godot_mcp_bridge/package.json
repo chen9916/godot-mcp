@@ -1,0 +1,28 @@
+{
+  "name": "godot-mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Client-neutral standard stdio MCP bridge for Godot",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:test": "tsc -p tsconfig.test.json",
+    "test": "npm run build:test && node scripts/run-tests.mjs",
+    "package:windows": "node scripts/package-windows.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/main.js",
+    "config:mcp": "node dist/main.js --print-config mcp",
+    "config:connection": "node dist/main.js --print-config connection"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.11.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.8.2"
+  }
+}

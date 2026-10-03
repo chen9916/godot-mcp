@@ -108,6 +108,12 @@ StringName EditorPropertyNameProcessor::_get_context(const String &p_name, const
 }
 
 String EditorPropertyNameProcessor::process_name(const String &p_name, Style p_style, const String &p_property, const StringName &p_class) const {
+	// Share the MCP acronym across settings categories, inspector sections,
+	// tooltips, and filtering.
+	if (p_style != STYLE_RAW && p_name == "godot_mcp" && (p_property == "network/godot_mcp" || p_property.begins_with("network/godot_mcp/"))) {
+		return p_style == STYLE_LOCALIZED ? TTR("Godot MCP") : "Godot MCP";
+	}
+
 	switch (p_style) {
 		case STYLE_RAW: {
 			return p_name;

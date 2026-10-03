@@ -2501,19 +2501,22 @@ static void _reset_animation_mixers(Node *p_node, List<Pair<AnimationMixer *, Re
 	}
 }
 
-void EditorNode::_save_scene(String p_file, int idx) {
-	ERR_FAIL_COND_MSG(!saving_scene.is_empty() && saving_scene == p_file, "Scene saved while already being saved!");
+Error EditorNode::_save_scene(String p_file, int idx, const String &p_expected_disk_version) {
+	ERR_FAIL_COND_V_MSG(!saving_scene.is_empty() && saving_scene == p_file, ERR_BUSY, "Scene saved while already being saved!");
+	if (!p_expected_disk_version.is_empty() && !EditorData::is_scene_disk_version_current(p_expected_disk_version, p_file)) {
+		return ERR_BUSY;
+	}
 
 	Node *scene = editor_data.get_edited_scene_root(idx);
 
 	if (!scene) {
 		show_warning(TTR("This operation can't be done without a tree root."));
-		return;
+		return ERR_UNCONFIGURED;
 	}
 
 	if (!scene->get_scene_file_path().is_empty() && _validate_scene_recursive(scene->get_scene_file_path(), scene)) {
 		show_warning(TTR("This scene can't be saved because there is a cyclic instance inclusion.\nPlease resolve it and then attempt to save again."));
-		return;
+		return ERR_CYCLIC_LINK;
 	}
 
 	scene->propagate_notification(NOTIFICATION_EDITOR_PRE_SAVE);
@@ -2544,7 +2547,7 @@ void EditorNode::_save_scene(String p_file, int idx) {
 
 	if (err != OK) {
 		show_warning(TTR("Couldn't save scene. Likely dependencies (instances or inheritance) couldn't be satisfied."));
-		return;
+		return err;
 	}
 
 	int flg = 0;
@@ -2553,7 +2556,18 @@ void EditorNode::_save_scene(String p_file, int idx) {
 	}
 	flg |= ResourceSaver::FLAG_REPLACE_SUBRESOURCE_PATHS;
 
+	// Scripts and editor plugins can write to disk during pre-save notifications and packing.
+	// Recheck the accepted content after those callbacks, immediately before persisting the scene.
+	if (!p_expected_disk_version.is_empty() && !EditorData::is_scene_disk_version_current(p_expected_disk_version, p_file)) {
+		for (Pair<AnimationMixer *, Ref<AnimatedValuesBackup>> &E : anim_backups) {
+			E.first->restore(E.second);
+		}
+		scene->propagate_notification(NOTIFICATION_EDITOR_POST_SAVE);
+		_update_unsaved_cache();
+		return ERR_BUSY;
+	}
 	err = ResourceSaver::save(sdata, p_file, flg);
+	const String saved_disk_version = err == OK ? EditorData::get_scene_disk_version(p_file) : String();
 
 	// This needs to be emitted before saving external resources.
 	emit_signal(SNAME("scene_saved"), p_file);
@@ -2572,6 +2586,7 @@ void EditorNode::_save_scene(String p_file, int idx) {
 		scene->set_scene_file_path(ProjectSettings::get_singleton()->localize_path(p_file));
 		editor_data.set_scene_as_saved(idx);
 		editor_data.set_scene_modified_time(idx, FileAccess::get_modified_time(p_file));
+		editor_data.set_scene_file_version(idx, scene->get_scene_file_path(), saved_disk_version);
 
 		if (EDITOR_GET("filesystem/on_save/warn_on_saving_large_text_resources")) {
 			if (p_file.ends_with(".tscn") || p_file.ends_with(".tres")) {
@@ -2595,6 +2610,12 @@ void EditorNode::_save_scene(String p_file, int idx) {
 
 	scene->propagate_notification(NOTIFICATION_EDITOR_POST_SAVE);
 	_update_unsaved_cache();
+	return err;
+}
+
+Error EditorNode::save_scene_with_content_guard(const String &p_file, int p_idx, const String &p_expected_disk_version) {
+	ERR_FAIL_COND_V(p_expected_disk_version.is_empty(), ERR_INVALID_PARAMETER);
+	return _save_scene(p_file, p_idx, p_expected_disk_version);
 }
 
 void EditorNode::save_all_scenes() {
@@ -4965,6 +4986,7 @@ Error EditorNode::load_scene(const String &p_scene, bool p_ignore_broken_deps, b
 	dependency_errors.clear();
 
 	Error err;
+	const String loaded_disk_version = EditorData::get_scene_disk_version(lpath);
 	Ref<PackedScene> sdata = ResourceLoader::load(lpath, "", ResourceFormatLoader::CACHE_MODE_REPLACE, &err);
 
 	if (!p_ignore_broken_deps && !dependency_errors.is_empty()) {
@@ -5027,6 +5049,9 @@ Error EditorNode::load_scene(const String &p_scene, bool p_ignore_broken_deps, b
 		idx = editor_data.add_edited_scene(-1);
 	}
 	editor_data.set_scene_root(idx, new_scene);
+	if (!p_set_inherited) {
+		editor_data.set_scene_file_version(idx, lpath, loaded_disk_version);
+	}
 
 	const Ref<ConfigFile> editor_state_cf = _load_scene_config(lpath);
 	if (editor_state_cf->has_section("editor_states")) {

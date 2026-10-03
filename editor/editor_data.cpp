@@ -887,6 +887,28 @@ uint64_t EditorData::get_scene_modified_time(int p_idx) const {
 	return edited_scene[p_idx].file_modified_time;
 }
 
+String EditorData::get_scene_disk_version(const String &p_path) {
+	return FileAccess::exists(p_path) ? FileAccess::get_md5(p_path) : String("missing");
+}
+
+bool EditorData::is_scene_disk_version_current(const String &p_expected_version, const String &p_path) {
+	return !p_expected_version.is_empty() && get_scene_disk_version(p_path) == p_expected_version;
+}
+
+void EditorData::set_scene_file_version(int p_idx, const String &p_path, const String &p_version) {
+	if (p_idx == -1) {
+		p_idx = current_edited_scene;
+	}
+	ERR_FAIL_INDEX(p_idx, edited_scene.size());
+	edited_scene.write[p_idx].file_version_path = p_path;
+	edited_scene.write[p_idx].file_content_version = p_version;
+}
+
+String EditorData::get_scene_file_version(int p_idx, const String &p_path) const {
+	ERR_FAIL_INDEX_V(p_idx, edited_scene.size(), String());
+	return edited_scene[p_idx].file_version_path == p_path ? edited_scene[p_idx].file_content_version : String();
+}
+
 String EditorData::get_scene_type(int p_idx) const {
 	ERR_FAIL_INDEX_V(p_idx, edited_scene.size(), String());
 	if (!edited_scene[p_idx].root) {

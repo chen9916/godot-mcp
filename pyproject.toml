@@ -73,6 +73,7 @@ skip = [
 	"DONORS.md",
 	"editor/import/unicode_ranges.inc",
 	"editor/project_converter_3_to_4.cpp",
+	"misc/godot_mcp_bridge/package-lock.json",
 	"platform/android/java/lib/src/main/java/com/*",
 	"platform/web/package-lock.json",
 ]

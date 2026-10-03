@@ -66,7 +66,7 @@ public:
 	static bool is_localization_available();
 
 	// Turns property path segment into the given style.
-	// `p_class` and `p_property` are only used for `STYLE_LOCALIZED`, associating the name with a translation context.
+	// `p_property` also scopes display aliases. `p_class` and `p_property` associate localized names with a translation context.
 	String process_name(const String &p_name, Style p_style, const String &p_property = "", const StringName &p_class = "") const;
 
 	// Translate plain text group names.

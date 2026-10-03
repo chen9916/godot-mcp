@@ -605,7 +605,7 @@ private:
 	void _set_current_scene_nocheck(int p_idx, bool p_ignore_state = false);
 	void _nav_to_selected_scene();
 	bool _validate_scene_recursive(const String &p_filename, Node *p_node);
-	void _save_scene(String p_file, int idx = -1);
+	Error _save_scene(String p_file, int idx = -1, const String &p_expected_disk_version = String());
 	void _save_all_scenes();
 	int _next_unsaved_scene(bool p_valid_filename, int p_start = 0);
 	void _discard_changes(const String &p_str = String());
@@ -1004,6 +1004,7 @@ public:
 	}
 
 	bool close_scene();
+	Error save_scene_with_content_guard(const String &p_file, int p_idx, const String &p_expected_disk_version);
 
 	bool is_scene_in_use(const String &p_path);
 

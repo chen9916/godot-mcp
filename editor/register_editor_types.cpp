@@ -39,8 +39,8 @@
 #include "editor/animation/animation_tree_editor_plugin.h"
 #include "editor/audio/audio_stream_randomizer_editor_plugin.h"
 #include "editor/debugger/debug_adapter/debug_adapter_server.h"
-#include "editor/debugger/opencode_mcp/opencode_mcp_server.h"
 #include "editor/debugger/editor_debugger_plugin.h"
+#include "editor/debugger/godot_mcp/godot_mcp_server.h"
 #include "editor/docks/filesystem_dock.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
@@ -240,7 +240,7 @@ void register_editor_types() {
 	EditorPlugins::add_by_type<MarginContainerEditorPlugin>();
 	EditorPlugins::add_by_type<MaterialEditorPlugin>();
 	if (!Engine::get_singleton()->is_recovery_mode_hint()) {
-		EditorPlugins::add_by_type<OpenCodeMCPServer>();
+		EditorPlugins::add_by_type<GodotMCPServer>();
 	}
 	EditorPlugins::add_by_type<PackedSceneEditorPlugin>();
 	EditorPlugins::add_by_type<ResourcePreloaderEditorPlugin>();

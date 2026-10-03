@@ -114,6 +114,9 @@ public:
 		Node *root = nullptr;
 		String path;
 		uint64_t file_modified_time = 0;
+		// Disk content accepted on load or successful save. In-memory reinstances must retain it.
+		String file_version_path;
+		String file_content_version;
 		Dictionary editor_states;
 		List<Node *> selection;
 		Vector<EditorSelectionHistory::HistoryElement> history_stored;
@@ -217,6 +220,10 @@ public:
 	uint64_t get_scene_time_opened(int p_idx) const;
 	void set_scene_modified_time(int p_idx, uint64_t p_time);
 	uint64_t get_scene_modified_time(int p_idx) const;
+	static String get_scene_disk_version(const String &p_path);
+	static bool is_scene_disk_version_current(const String &p_expected_version, const String &p_path);
+	void set_scene_file_version(int p_idx, const String &p_path, const String &p_version);
+	String get_scene_file_version(int p_idx, const String &p_path) const;
 	void clear_edited_scenes();
 	void set_edited_scene_live_edit_root(const NodePath &p_root);
 	NodePath get_edited_scene_live_edit_root();
