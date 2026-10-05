@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 assert.ok(process.argv.length === 4 || (process.argv.length === 5 && process.argv[4] === "--check-source"), "Usage: node scripts/verify-package.mjs --package <new bundle directory> [--check-source]");
 assert.equal(process.argv[2], "--package");
 const package_directory = path.resolve(process.argv[3]);
+const exec_file_async = promisify(execFile);
 const manifest = JSON.parse(await fs.readFile(path.join(package_directory, "RELEASE_MANIFEST.json"), "utf8"));
 assert.equal(manifest.format_version, 1);
 assert.equal(manifest.platform, "windows");
@@ -85,16 +87,20 @@ async function start_editor(previous_id) {
 async function connect() {
 	const node = path.join(bundle, "runtime/node.exe");
 	const bridge = path.join(bundle, "bridge/dist/main.js");
-	const exported = JSON.parse(execFileSync(node, [bridge, "--print-config", "mcp", "--project-root", project], { encoding: "utf8", windowsHide: true }));
+	// Keep draining the owned editor's log pipes while its MCP endpoint is used.
+	const cli_options = { encoding: "utf8", windowsHide: true, timeout: 30_000 };
+	const exported = JSON.parse((await exec_file_async(node, [bridge, "--print-config", "mcp", "--project-root", project], cli_options)).stdout);
 	assert.deepEqual(exported.mcpServers.godot, { command: node, args: [bridge, "--project-root", project] });
 	// Exercise the actual CMD launcher, including quoted Unicode/space paths.
-	const launcher_export = JSON.parse(execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `""${path.join(bundle, "godot-mcp.cmd")}" config --client antigravity --project-root "${project}""`], { encoding: "utf8", windowsHide: true, windowsVerbatimArguments: true }));
+	const launcher_export = JSON.parse((await exec_file_async(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `""${path.join(bundle, "godot-mcp.cmd")}" config --client antigravity --project-root "${project}""`], { ...cli_options, windowsVerbatimArguments: true })).stdout);
 	assert.deepEqual(launcher_export, exported);
 	const setup_file = path.join(directory, "disposable-antigravity.json");
-	const installed = JSON.parse(execFileSync(node, [bridge, "setup", "--client", "antigravity", "--config", setup_file, "--project-root", project, "--replace", "--no-check", "--json"], { encoding: "utf8", windowsHide: true }));
+	const installed = JSON.parse((await exec_file_async(node, [bridge, "setup", "--client", "antigravity", "--config", setup_file, "--project-root", project, "--replace", "--json"], cli_options)).stdout);
 	assert.equal(installed[0].registered, true);
+	assert.equal(installed[0].checks.bridge.ok, true);
+	assert.equal(installed[0].checks.editor.ok, true);
 	assert.deepEqual(JSON.parse(await fs.readFile(setup_file, "utf8")).mcpServers.godot, exported.mcpServers.godot);
-	const checked = JSON.parse(execFileSync(node, [bridge, "doctor", "--client", "antigravity", "--config", setup_file, "--json"], { encoding: "utf8", windowsHide: true }));
+	const checked = JSON.parse((await exec_file_async(node, [bridge, "doctor", "--client", "antigravity", "--config", setup_file, "--json"], cli_options)).stdout);
 	assert.equal(checked[0].ok, true);
 	assert.equal(checked[0].editor.ok, true);
 	const transport = new StdioClientTransport({ ...exported.mcpServers.godot, cwd: project, stderr: "pipe" });

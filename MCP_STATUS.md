@@ -35,13 +35,19 @@ environment overrides, OpenCode V1/V2, and alternate configuration paths.
 TypeScript typecheck and production build passed. The updated default suite
 passed 61 tests, with four optional live workflows skipped. A separate focused
 review found no remaining setup blockers. Repository checks passed, as did an
-isolated npm tarball installation and its generated command launcher. This pass changes bridge setup and
-packaging only; it reuses the previously verified editor binary. Client fixtures
+isolated npm tarball installation and its generated command launcher. This pass
+changes bridge setup and packaging only; it reuses the previously verified editor
+binary. Client fixtures
 and independent MCP diagnostics establish configuration and launch behavior;
 they do not establish that every agent application has reloaded its tools.
 
-The 2026-10-03 archive retains its original bridge. Generate a new distribution
-with the updated packager and run its package verifier before using shared setup.
+Portable launcher/setup/doctor, independent SDK calls, scene persistence,
+restart/reconnect, and moved-bundle checks passed using disposable copies. The
+complete isolated release workflow also passed against the updated payload.
+The distribution with shared setup is
+`artifacts/Godot-MCP-4.8-dev-Windows-x86_64-20261005-setup`. The 2026-10-03 archive
+retains its original bridge. Each new package still requires the clean
+source/manifest check described below.
 
 ## Correctness work
 
