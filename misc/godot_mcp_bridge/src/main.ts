@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import path from "node:path";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -82,6 +83,7 @@ function _print_help(): void {
 		"",
 		"Usage:",
 		"  node dist/main.js [options]",
+		"  godot-mcp setup|config|doctor|remove|clients --help",
 		"",
 		"Options:",
 		"  --project-root <path>          Optional project root for session discovery (auto-detected by default).",
@@ -238,7 +240,13 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 }
 
 async function _main(): Promise<void> {
-	const options = _parse_cli_options(process.argv.slice(2));
+	const args = process.argv.slice(2);
+	if (["setup", "config", "doctor", "remove", "clients"].includes(args[0])) {
+		const { run_setup_cli } = await import("./setup.js");
+		await run_setup_cli(args, path.resolve(process.argv[1]));
+		return;
+	}
+	const options = _parse_cli_options(args[0] === "serve" ? args.slice(1) : args);
 
 	if (options.help) {
 		_print_help();

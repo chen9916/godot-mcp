@@ -15,6 +15,14 @@ npm.cmd run build
 
 On platforms without `npm.cmd`, use `npm`. `npm test` compiles `.test-dist` and runs unit, localhost transport, independent stdio, and configuration-export tests. Its runner selects outputs corresponding to current test sources, excluding stale outputs from deleted or renamed tests. It does not require Godot unless optional workflow environment variables are set. The four live workflows below are skipped by default; a successful default run therefore leaves those workflows unverified.
 
+The default suite also checks shared client setup for Codex, OpenCode V1/V2,
+Hermes, Antigravity, Claude Code, and Claude Desktop using isolated files. It
+exercises comment/settings preservation, malformed and ambiguous documents,
+environment and scope paths, disabled registrations, repeated setup, removal,
+backups, concurrent edits, and CLI subprocesses. Doctor tests initialize the real
+bridge against offline and fixture editor endpoints and verify bounded process
+termination. They do not install into the user's agent profiles.
+
 ## Native editor build and tests
 
 Godot-side tests in `tests/editor/godot_mcp/` are included when building with `tests=yes`. The following Windows command uses the sibling SCons checkout provided in this workspace. Run from the engine root with the required Godot Windows build dependencies installed:
@@ -107,11 +115,12 @@ $env:GODOT_MCP_RELEASE_BUNDLE = "C:\absolute\path\to\checkout\artifacts\new-rele
 node --test .test-dist/test/release_editor_integration.test.js
 ```
 
-The payload contains the editor, bridge build, bundled Node, lockfile-installed
+The payload contains the editor, `godot-mcp.cmd` setup launcher, bridge build, bundled Node, lockfile-installed
 production dependencies, and notices. Its manifest records the source commit,
 source and payload hashes, and executable versions. `--check-source` verifies
 that the clean checkout still matches that manifest. The smoke verifier checks
-an independent SDK client, scene mutation/save, saved state across an editor
+the actual launcher with quoted paths, setup/doctor against a disposable client
+file, an independent SDK client, scene mutation/save, saved state across an editor
 restart, reconnecting the same bridge, and exporting/connecting after moving a
 temporary copy. Packaging currently supports Windows x86_64.
 
@@ -127,6 +136,7 @@ temporary copy. Packaging currently supports Windows x86_64.
 | Scene patches | Native scene-patch tests plus the separate live patch fixture | Covers global properties, ordered script assignments, best-effort isolation, apply/undo/redo, persistence, and reload. Selected cases do not exhaust every mutation ordering or custom setter. |
 | Diagnostics | Native store isolation tests and two-run live assertions requiring each intentional runtime marker | This covers run isolation and marker delivery rather than every possible runtime error. |
 | Packaging/setup | Isolated settings export, package hashes/source identity, actual SDK mutation/save, real restart/reconnect, moved bundle, and isolated release workflow | Only the exact tested payload is covered; existing release archives are not refreshed implicitly. |
+| Shared client setup | All six target schemas/scopes, preservation and conflict fixtures, CLI setup/removal, storage backups, real bridge diagnostics, and packaged launcher | Independent diagnostics and file registration do not establish tool visibility in every running agent application. |
 
 ## Test hygiene
 

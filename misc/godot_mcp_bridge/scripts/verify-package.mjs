@@ -42,7 +42,7 @@ if (process.argv.includes("--check-source")) {
 	assert.equal(git(["status", "--porcelain", "--untracked-files=normal"]), "", "Commit the source before final package verification.");
 	for (const [name, digest] of Object.entries(manifest.source_sha256)) assert.equal(await sha256(contained_file(engine, name)), digest, `Source hash mismatch: ${name}`);
 }
-for (const name of ["Godot.exe", "_sc_", "LICENSE.txt", "COPYRIGHT.txt", "runtime/node.exe", "runtime/LICENSE", "bridge/dist/main.js", "bridge/package-lock.json"]) assert.ok(name in manifest.files_sha256, `Missing release component: ${name}`);
+for (const name of ["Godot.exe", "godot-mcp.cmd", "_sc_", "LICENSE.txt", "COPYRIGHT.txt", "runtime/node.exe", "runtime/LICENSE", "bridge/dist/main.js", "bridge/dist/setup.js", "bridge/dist/client_config.js", "bridge/dist/setup_doctor.js", "bridge/dist/setup_storage.js", "bridge/README.md", "bridge/package-lock.json"]) assert.ok(name in manifest.files_sha256, `Missing release component: ${name}`);
 await assert.rejects(fs.stat(path.join(package_directory, "bridge/node_modules/typescript")), { code: "ENOENT" });
 await assert.rejects(fs.stat(path.join(package_directory, "bridge/.test-dist")), { code: "ENOENT" });
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "Godot MCP package 婕㈠瓧 "));
@@ -87,6 +87,16 @@ async function connect() {
 	const bridge = path.join(bundle, "bridge/dist/main.js");
 	const exported = JSON.parse(execFileSync(node, [bridge, "--print-config", "mcp", "--project-root", project], { encoding: "utf8", windowsHide: true }));
 	assert.deepEqual(exported.mcpServers.godot, { command: node, args: [bridge, "--project-root", project] });
+	// Exercise the actual CMD launcher, including quoted Unicode/space paths.
+	const launcher_export = JSON.parse(execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `""${path.join(bundle, "godot-mcp.cmd")}" config --client antigravity --project-root "${project}""`], { encoding: "utf8", windowsHide: true, windowsVerbatimArguments: true }));
+	assert.deepEqual(launcher_export, exported);
+	const setup_file = path.join(directory, "disposable-antigravity.json");
+	const installed = JSON.parse(execFileSync(node, [bridge, "setup", "--client", "antigravity", "--config", setup_file, "--project-root", project, "--replace", "--no-check", "--json"], { encoding: "utf8", windowsHide: true }));
+	assert.equal(installed[0].registered, true);
+	assert.deepEqual(JSON.parse(await fs.readFile(setup_file, "utf8")).mcpServers.godot, exported.mcpServers.godot);
+	const checked = JSON.parse(execFileSync(node, [bridge, "doctor", "--client", "antigravity", "--config", setup_file, "--json"], { encoding: "utf8", windowsHide: true }));
+	assert.equal(checked[0].ok, true);
+	assert.equal(checked[0].editor.ok, true);
 	const transport = new StdioClientTransport({ ...exported.mcpServers.godot, cwd: project, stderr: "pipe" });
 	const client = new Client({ name: "independent-package-verification", version: "1" }, { capabilities: {} });
 	await client.connect(transport);
@@ -168,7 +178,7 @@ try {
 	await active_client.close();
 	active_client = undefined;
 	await stop_editor();
-	process.stdout.write("PASS: package hashes and production layout; independent SDK initialization/tools/session; packaged bridge mutation/save; same bridge reconnect and saved scene after real editor restart; moved package export, connection, and saved scene.\n");
+	process.stdout.write("PASS: package hashes and production layout; CMD launcher, setup registration, and doctor; independent SDK initialization/tools/session; packaged bridge mutation/save; same bridge reconnect and saved scene after real editor restart; moved package setup, connection, and saved scene.\n");
 } finally {
 	if (active_client) await active_client.close().catch(() => {});
 	await stop_editor();

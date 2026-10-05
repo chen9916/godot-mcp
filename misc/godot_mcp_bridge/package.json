@@ -4,6 +4,13 @@
   "private": true,
   "type": "module",
   "description": "Client-neutral standard stdio MCP bridge for Godot",
+  "bin": {
+    "godot-mcp": "dist/main.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "README.md"
+  ],
   "engines": {
     "node": ">=18"
   },
@@ -15,11 +22,16 @@
     "verify:package": "node scripts/verify-package.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/main.js",
+    "setup": "node dist/main.js setup",
+    "doctor": "node dist/main.js doctor",
     "config:mcp": "node dist/main.js --print-config mcp",
     "config:connection": "node dist/main.js --print-config connection"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.11.2"
+    "@modelcontextprotocol/sdk": "^1.11.2",
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.9.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -1,6 +1,7 @@
 # Godot MCP release status
 
-Last checked: 2026-10-03. This document owns release scope and verification
+Last checked: 2026-10-05 for shared setup; native release evidence below is from
+2026-10-03. This document owns release scope and verification
 evidence. Setup, API contracts, architecture, and reproducible checks live in the
 [bridge guide](misc/godot_mcp_bridge/README.md),
 [engine guide](editor/debugger/godot_mcp/README.md),
@@ -16,11 +17,31 @@ dependencies, and licenses. The underlying engine is a custom Godot 4.8-dev
 build. These checks do not establish an upstream stable Godot release or support
 for untested platforms and every MCP client application.
 
-The Windows MCP implementation and release checks below are complete. The new
+The Windows MCP implementation and release checks below are complete. The prior
 distribution is `artifacts/Godot-MCP-4.8-dev-Windows-x86_64-20261003`, with a
 matching ZIP and SHA-256 sidecar. Its `RELEASE_MANIFEST.json` records the exact
 source commit, embedded editor version, Node version, and source/payload hashes.
 Pre-existing distributions are separate artifacts.
+
+## Shared client setup (2026-10-05)
+
+The bridge now provides a common `godot-mcp setup` flow for Codex, OpenCode,
+Hermes, Antigravity, Claude Code, and Claude Desktop. It selects clients, resolves
+their native configuration paths, preserves unrelated settings, backs up changed
+files, and exposes `config`, `clients`, `remove`, and `doctor` commands. Windows
+packaging includes a launcher and Node runtime. See the bridge guide for scopes,
+environment overrides, OpenCode V1/V2, and alternate configuration paths.
+
+TypeScript typecheck and production build passed. The updated default suite
+passed 61 tests, with four optional live workflows skipped. A separate focused
+review found no remaining setup blockers. Repository checks passed, as did an
+isolated npm tarball installation and its generated command launcher. This pass changes bridge setup and
+packaging only; it reuses the previously verified editor binary. Client fixtures
+and independent MCP diagnostics establish configuration and launch behavior;
+they do not establish that every agent application has reloaded its tools.
+
+The 2026-10-03 archive retains its original bridge. Generate a new distribution
+with the updated packager and run its package verifier before using shared setup.
 
 ## Correctness work
 
