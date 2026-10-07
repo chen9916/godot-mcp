@@ -47,6 +47,49 @@ if (process.argv.includes("--check-source")) {
 for (const name of ["Godot.exe", "godot-mcp.cmd", "_sc_", "LICENSE.txt", "COPYRIGHT.txt", "runtime/node.exe", "runtime/LICENSE", "bridge/dist/main.js", "bridge/dist/setup.js", "bridge/dist/client_config.js", "bridge/dist/setup_doctor.js", "bridge/dist/setup_storage.js", "bridge/README.md", "bridge/package-lock.json"]) assert.ok(name in manifest.files_sha256, `Missing release component: ${name}`);
 await assert.rejects(fs.stat(path.join(package_directory, "bridge/node_modules/typescript")), { code: "ENOENT" });
 await assert.rejects(fs.stat(path.join(package_directory, "bridge/.test-dist")), { code: "ENOENT" });
+if (manifest.export_templates !== undefined) {
+	const templates = manifest.export_templates;
+	assert.match(templates.version, /^[A-Za-z0-9][A-Za-z0-9_.-]*$/, "Unsafe template version directory.");
+	assert.equal(templates.architecture, "x86_64");
+	assert.equal(templates.editor_version, manifest.editor_version);
+	assert.ok(typeof templates.build === "string" && templates.build.length > 0, "Missing template build identity.");
+	assert.equal(manifest.editor_version.replace(/\.[0-9a-f]{9}$/, ""), `${templates.version}.${templates.build}`, "Template configuration does not match the editor version.");
+	const directory = `editor_data/export_templates/${templates.version}`;
+	assert.equal(templates.directory, directory);
+	assert.deepEqual(templates.files, {
+		debug: `${directory}/windows_debug_x86_64.exe`,
+		release: `${directory}/windows_release_x86_64.exe`,
+		debug_console: `${directory}/windows_debug_x86_64_console.exe`,
+		release_console: `${directory}/windows_release_x86_64_console.exe`,
+	});
+	if (templates.runtime_files !== undefined) assert.deepEqual(templates.runtime_files, {
+		d3d12_core: `${directory}/D3D12Core.x86_64.dll`,
+		d3d12_layers: `${directory}/d3d12SDKLayers.x86_64.dll`,
+		license: `${directory}/D3D12-LICENSE.txt`,
+	});
+	for (const [kind, name] of Object.entries({ ...templates.files, ...templates.runtime_files })) {
+		assert.ok(name in manifest.files_sha256, `Missing export template hash: ${name}`);
+		const filename = contained_file(package_directory, name);
+		if (kind === "license") {
+			assert.ok((await fs.readFile(filename, "utf8")).trim().length > 0, "Empty Direct3D 12 license notice.");
+			continue;
+		}
+		const binary = await fs.open(filename, "r");
+		try {
+			const header = Buffer.alloc(64);
+			await binary.read(header, 0, header.length, 0);
+			assert.equal(header.toString("ascii", 0, 2), "MZ", `Invalid template executable: ${name}`);
+			const pe = Buffer.alloc(6);
+			await binary.read(pe, 0, pe.length, header.readUInt32LE(0x3c));
+			assert.equal(pe.toString("ascii", 0, 4), "PE\u0000\u0000", `Invalid template PE header: ${name}`);
+			assert.equal(pe.readUInt16LE(4), 0x8664, `Expected an x86_64 template: ${name}`);
+		} finally { await binary.close(); }
+		if (kind === "debug" || kind === "release") {
+			const version = await exec_file_async(filename, ["--version"], { cwd: package_directory, windowsHide: true, encoding: "utf8", timeout: 30_000 });
+			assert.equal(version.stdout.trim(), manifest.editor_version, `Template version mismatch: ${name}`);
+		}
+	}
+}
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "Godot MCP package 婕㈠瓧 "));
 let bundle = path.join(directory, "Portable Godot");
 const project = path.join(directory, "Disposable Project");

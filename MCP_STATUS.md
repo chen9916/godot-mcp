@@ -13,8 +13,10 @@ evidence. Setup, contracts, architecture, and reproducible commands live in the
 The target is the local Godot MCP editor/runtime integration on Windows x86_64,
 distributed with the standard stdio bridge, Node runtime, locked production
 dependencies, and license notices. The engine is a custom Godot 4.8-dev build.
-The 0.2.0 distribution path is
-`artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007`. Final payload checks run after
+The distribution with integrated Windows export templates is
+`artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007-templates`. The earlier
+`artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007` bundle remains available without
+export templates. Final payload checks run after
 the source commit and rebuild; their results are recorded in the adjacent
 `.verification.json` report. The ZIP and `.sha256` sidecar are produced only
 after those checks pass.
@@ -23,6 +25,27 @@ The stdio MCP server identifies as 0.2.0. The lockfile now uses MCP SDK 1.32.1,
 and the selected bundled runtime is Node.js 22.23.1. Existing 2026-10-03 and
 2026-10-05 distributions retain their original editor/bridge code and are
 separate artifacts.
+
+## Windows export templates
+
+The template distribution includes matching Windows x86_64 debug and release
+executables and their console launchers. They are installed in the portable
+editor's `editor_data/export_templates/4.8.dev/` directory, so ordinary Windows
+Desktop export presets can find them without custom template paths. Direct3D 12
+Agility runtime DLLs and their original license accompany the templates.
+
+The build uses `tests=no`, `debug_symbols=no`, `accesskit=no`, `angle=no`, and
+`werror=yes` for both template targets. The editor and templates must report the
+same full build version. Release templates do not initialize the debug-only MCP
+runtime integration. A standalone Windows `.tpz` installer and checksum are also
+produced from the verified package.
+
+`scripts/verify-windows-export.mjs` copies the portable bundle into a disposable
+installation, exports a small project using the default installed templates, and
+runs debug/release games and their console launchers. The archive verification
+report records the actual result after packaging. The check exercises standalone
+headless execution; it does not certify every graphics driver, third-party
+extension, signing configuration, or game project.
 
 ## Changes in 0.2.0
 
@@ -103,6 +126,7 @@ to normal agent profiles during tests.
 | Native protocol workflow | Passed: containment, owner undo/redo and persistence, resources and alias/capacity/conflict guards, UTF-8 request bytes, and all four GDScript queries. |
 | Isolated release workflow | Passed: real unsaved buffers, save conflicts, scene patches, runtime, injected mouse coordinates/masks, capture, and diagnostics. |
 | Final package inventory/hashes, SDK smoke, restart/reconnect, moved payload | Required after clean-source packaging; final outcome is in the archive verification report. |
+| Windows debug/release exports and standalone console/GUI binaries | Required for the template distribution; exact results are recorded by the Windows export verifier in the archive verification report. |
 | Clean committed source/manifest match, ZIP, and checksum | Required after committing and rebuilding; source identity is in `RELEASE_MANIFEST.json`, archive evidence in the verification report. |
 
 Tests which require localhost and atomic replacement must have that access.
@@ -151,5 +175,7 @@ platform/window/input-routing combination.
 Client fixtures and independent MCP initialization establish format and launch
 behavior, not that every running agent application has reloaded its tools.
 Support beyond Windows x86_64 requires the corresponding native, live-editor,
-graphics, configuration, and package checks. Godot export templates and exported
-game validation are outside this MCP editor distribution.
+graphics, configuration, and package checks. Windows x86_64 templates and the
+standalone export smoke test are included in the template distribution; templates
+for other platforms and validation of individual game projects are outside its
+scope.

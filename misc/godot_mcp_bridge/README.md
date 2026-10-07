@@ -16,6 +16,17 @@ For supported release scope, executed checks, and remaining work, see [MCP statu
 
 Use the [bridge build commands](test/README.md#bridge-build-and-default-tests) from this directory. The same guide owns native build commands and optional live workflows.
 
+Windows packages can include matching x86_64 debug/release export templates and
+their console companions. The packager requires all four template inputs together
+and checks the main template versions against the editor. They are installed
+under `editor_data/export_templates/<Godot configuration version>` so normal
+Windows export presets find them without custom paths. Check the package manifest
+for `export_templates`; older MCP packages may contain only the editor and bridge.
+Other platform templates require their corresponding builds.
+Direct3D 12 builds can additionally bundle the matching Agility SDK runtime,
+debug layers, and distribution license; those files are recorded separately in
+the template metadata and copied by Windows export presets that include them.
+
 ## Shared setup for MCP clients
 
 Use the same setup tool for **Codex, OpenCode, Hermes, Antigravity, Claude Code,

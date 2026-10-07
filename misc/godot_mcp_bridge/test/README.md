@@ -182,6 +182,75 @@ including `request_control.js`; stale dist files are excluded. Source hashes
 include bridge source, tests, and packaging scripts. `--allow-dirty` is reserved
 for a recorded tooling probe and cannot satisfy the clean source release gate.
 
+To include Windows export templates, build both `template_debug` and
+`template_release` targets for x86_64 from the same committed revision and build
+configuration as the editor, including their console companions. Supply all four
+inputs together; partial pairs are rejected before creating an output directory.
+Use a fresh output path, for example:
+
+```powershell
+$mcpTemplateReleaseDirectory = [System.IO.Path]::GetFullPath("../../artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007-templates")
+npm.cmd run package:windows -- --editor "$mcpReleaseEditor" --output "$mcpTemplateReleaseDirectory" --node-license "C:\absolute\path\to\Node\LICENSE" --template-debug "C:\absolute\path\to\template_debug.exe" --template-release "C:\absolute\path\to\template_release.exe" --template-debug-console "C:\absolute\path\to\template_debug.console.exe" --template-release-console "C:\absolute\path\to\template_release.console.exe"
+node scripts/verify-package.mjs --package "$mcpTemplateReleaseDirectory" --check-source
+node scripts/verify-windows-export.mjs --package "$mcpTemplateReleaseDirectory"
+```
+
+Every executable must be a Windows x86_64 PE file. Both main template `--version`
+strings must exactly match the editor, including its build and commit identity.
+The portable paths are
+`editor_data/export_templates/<GODOT_VERSION_FULL_CONFIG>/windows_debug_x86_64.exe`
+and `windows_release_x86_64.exe`, with corresponding `_console.exe` companions.
+The current configuration directory is `4.8.dev`; the packager derives it from
+the actual editor version and validates it against source version definitions.
+The optional `export_templates` manifest metadata records the configuration,
+build, exact editor version, and all four hashed paths. Packages without this
+metadata retain the editor-only verification path.
+
+For templates built with Direct3D 12, additionally pass
+`--template-d3d12-core <D3D12Core.dll>`,
+`--template-d3d12-layers <d3d12SDKLayers.dll>`, and
+`--template-d3d12-license <Agility SDK LICENSE.txt>` together. The DLLs must be
+x86_64 and match the SDK used by the build. They are installed as
+`D3D12Core.x86_64.dll` and `d3d12SDKLayers.x86_64.dll` beside the templates, with
+`D3D12-LICENSE.txt` preserving the distribution terms. The optional
+`export_templates.runtime_files` map records their hashed paths. This group
+requires the four template inputs and rejects missing DLLs or license notices.
+
+The Windows export verifier copies the payload into a disposable directory,
+imports a small project, exports debug and release presets with empty custom
+template paths, and runs both main outputs and console companions. This checks
+automatic template discovery and actual exported-game execution. It does not
+establish support for other platforms or every renderer/project combination.
+
+For the current Windows build, these commands run from the engine root and
+produce both template executables and their `.console.exe` companions. Match
+the editor's remaining build options and revision; template builds can use
+`tests=no` while retaining debugging features in `template_debug`:
+
+```powershell
+scons platform=windows target=template_debug arch=x86_64 accesskit=no angle=no debug_symbols=no tests=no werror=yes extra_suffix=mcp_templates bin/godot.windows.template_debug.x86_64.mcp_templates.exe bin/godot.windows.template_debug.x86_64.mcp_templates.console.exe
+scons platform=windows target=template_release arch=x86_64 accesskit=no angle=no debug_symbols=no tests=no werror=yes extra_suffix=mcp_templates bin/godot.windows.template_release.x86_64.mcp_templates.exe bin/godot.windows.template_release.x86_64.mcp_templates.console.exe
+```
+
+After packaging and both verifiers above pass, create a standalone TPZ from the
+validated bundle. Run from the bridge directory with a new output path:
+
+```powershell
+$mcpTemplateArchive = [System.IO.Path]::GetFullPath("../../artifacts/Godot-MCP-Windows-x86_64-templates.tpz")
+python scripts/package-windows-templates.py --package "$mcpTemplateReleaseDirectory" --output "$mcpTemplateArchive"
+Get-FileHash "$mcpTemplateArchive" -Algorithm SHA256
+Get-Content "$mcpTemplateArchive.sha256"
+```
+
+The builder requires a clean release manifest and verifies the template and
+notice hashes before writing. It includes `templates/version.txt`, all four
+standard executable names, Godot notices, and the declared D3D12 files and license
+when present. It verifies archive CRCs, inventory, and each entry's SHA-256, then
+writes an adjacent `.tpz.sha256`; existing outputs are refused. Fixed metadata
+and level-six DEFLATE reproduce identical inputs with the same Python/zlib
+runtime. Install the TPZ through **Manage Export Templates > Install from File**;
+it supports Windows x86_64 for the configuration recorded in the manifest.
+
 ## Coverage and limits
 
 | Area | Available coverage | Limit |
