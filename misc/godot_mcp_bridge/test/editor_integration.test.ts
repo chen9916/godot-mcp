@@ -73,6 +73,12 @@ test("live editor workflow covers validation, SVG import, reload, runtime intera
 		"var probe_count: int = 0",
 		"var input_ticks: int = 0",
 		"var input_seen: bool = false",
+		"var mouse_events: Array = []",
+		"func _input(event: InputEvent) -> void:",
+		"\tif event is InputEventMouse:",
+		'\t\tmouse_events.append({"kind": event.get_class(), "mask": int(event.button_mask), "x": event.position.x, "y": event.position.y, "global_x": event.global_position.x, "global_y": event.global_position.y})',
+		"func mouse_snapshot():",
+		'\treturn {"events": mouse_events, "pressed": Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)}',
 		"func _ready() -> void:",
 		'\tpush_error("MCP integration run marker")',
 		"func _physics_process(_delta: float) -> void:",
@@ -229,6 +235,29 @@ test("live editor workflow covers validation, SVG import, reload, runtime intera
 	}));
 	assert.equal(input_seen.value, true);
 	assert.equal(Number(await runtime_property("input_ticks")), running_input_before + 2, "Running action must stay pressed through both requested callbacks.");
+	// Exercise injected drag events, including masks and global coordinates.
+	// Viewport mouse polling can read the physical desktop cursor independently.
+	for (const event of [
+		{ type: "mouse_button", button_index: 1, pressed: true, position: { x: 100, y: 120 } },
+		{ type: "mouse_motion", position: { x: 150, y: 160 }, relative: { x: 50, y: 40 } },
+	]) {
+		unwrap_data(await wait_for_runtime_operation(lifecycle, "runtime.input_event", { run_id: active_run_id, ...event }));
+		await wait_for_runtime_operation(lifecycle, "runtime.advance_frames", { run_id: active_run_id, frames: 2, frame_type: "process" });
+	}
+	const mouse_snapshot = async () => unwrap_data(await wait_for_runtime_operation(lifecycle, "runtime.call", {
+		run_id: active_run_id, node_path: "/root/MCPIntegration", method: "mouse_snapshot",
+	})).result as Record<string, any>;
+	const drag = await mouse_snapshot();
+	assert.equal(drag.pressed, true);
+	assert.ok(drag.events.some((event: any) => event.kind === "InputEventMouseButton" && event.mask === 1 && event.x === 100 && event.y === 120 && event.global_x === 100 && event.global_y === 120));
+	assert.ok(drag.events.some((event: any) => event.kind === "InputEventMouseMotion" && event.mask === 1 && event.x === 150 && event.y === 160 && event.global_x === 150 && event.global_y === 160));
+	await wait_for_runtime_operation(lifecycle, "runtime.input_event", {
+		run_id: active_run_id, type: "mouse_button", button_index: 1, pressed: false, position: { x: 150, y: 160 },
+	});
+	await wait_for_runtime_operation(lifecycle, "runtime.advance_frames", { run_id: active_run_id, frames: 2, frame_type: "process" });
+	const released = await mouse_snapshot();
+	assert.equal(released.pressed, false);
+	assert.ok(released.events.some((event: any) => event.kind === "InputEventMouseButton" && event.mask === 0 && event.x === 150 && event.y === 160));
 	const capture = unwrap_data(await wait_for_runtime_operation(lifecycle, "runtime.capture_viewport", {
 		run_id: active_run_id, viewport: "/root", scale: 0.25, frame_wait: 1, timeout_ms: 20_000,
 	}));

@@ -422,6 +422,8 @@ Lifecycle: holds release automatically after the requested physics frames. A pau
 
 Purpose: inject bounded mouse motion or mouse-button input. Capability: `runtime_inspection`. Read-safe only through request-ID deduplication.
 
+Mouse events carry local/global coordinates and the current button mask, including held buttons during motion. Injection updates Godot input state but does not warp the desktop cursor; on desktop platforms, root-viewport mouse-position polling may still report the physical cursor.
+
 Input schema: `run_id: string`; `type: "mouse_motion" | "mouse_button"`; `position?: {x:number,y:number}`; `relative?: {x:number,y:number}`; `button_index?: integer` (`1..9`, required by `mouse_button`); `pressed?: boolean` (default `true`); `double_click?: boolean` (default `false`); `timeout_ms?: integer` (`100..60000`).
 
 Output schema: `type`, `process_frame`, and common completed runtime request fields.

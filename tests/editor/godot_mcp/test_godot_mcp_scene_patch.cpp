@@ -696,6 +696,82 @@ TEST_CASE("[GodotMCP][ScenePatch] JSON integer positions and packed values retai
 	CHECK(PackedInt64Array(harness.root->get_meta("int64")) == int64);
 }
 
+TEST_CASE("[GodotMCP][ScenePatch] Positions and undo exclude internal children") {
+	PatchHarness harness;
+	Node *parent = memnew(Node);
+	parent->set_name("Parent");
+	harness.root->add_child(parent);
+	parent->set_owner(harness.root);
+	Node *front = memnew(Node);
+	front->set_name("InternalFront");
+	parent->add_child(front, false, Node::INTERNAL_MODE_FRONT);
+	Node *back = memnew(Node);
+	back->set_name("InternalBack");
+	parent->add_child(back, false, Node::INTERNAL_MODE_BACK);
+	for (const String &name : { String("A"), String("B"), String("C") }) {
+		Node *child = memnew(Node);
+		child->set_name(name);
+		parent->add_child(child);
+		child->set_owner(harness.root);
+	}
+	const String before_version = harness.version();
+	const auto check_order = [&](const String &p_names) {
+		String names;
+		for (int i = 0; i < parent->get_child_count(false); i++) {
+			names += String(parent->get_child(i, false)->get_name());
+		}
+		CHECK(names == p_names);
+		CHECK(parent->get_child(0, true) == front);
+		CHECK(parent->get_child(parent->get_child_count(true) - 1, true) == back);
+	};
+	int error_code = 0;
+	String error_message;
+	Array operations;
+	String expected;
+	SUBCASE("moving away restores the original ordinary index") {
+		operations = JSON::parse_string(R"([{"op":"move_node","node":"Parent/B","parent":"."}])");
+		expected = "AC";
+	}
+	SUBCASE("deletion undo restores the original ordinary index") {
+		operations = JSON::parse_string(R"([{"op":"delete_node","node":"Parent/B"}])");
+		expected = "AC";
+	}
+	SUBCASE("ordered create move delete uses the planned ordinary range") {
+		operations = JSON::parse_string(R"([
+			{"op":"create_node","id":"d","parent":"Parent","name":"D","type":"Node","position":1},
+			{"op":"move_node","node":"Parent/B","parent":"Parent","position":0},
+			{"op":"delete_node","node":"Parent/A"}
+		])");
+		expected = "BDC";
+	}
+	SUBCASE("append stays before internal back children") {
+		operations = JSON::parse_string(R"([{"op":"create_node","id":"d","parent":"Parent","name":"D","type":"Node"}])");
+		expected = "ABCD";
+	}
+	SUBCASE("create cannot use internal children to extend the position bound") {
+		operations = JSON::parse_string(R"([{"op":"create_node","id":"d","parent":"Parent","name":"D","type":"Node","position":4}])");
+	}
+	SUBCASE("move cannot use internal children to extend the position bound") {
+		operations = JSON::parse_string(R"([{"op":"move_node","node":"Parent/B","parent":"Parent","position":3}])");
+	}
+	const Dictionary result = harness.apply(operations, error_code, error_message);
+	if (expected.is_empty()) {
+		CHECK(result.is_empty());
+		CHECK(error_code == GodotMCPError::INVALID_ARGUMENT);
+		CHECK(harness.undo_redo->get_history_count() == 0);
+		check_order("ABC");
+		return;
+	}
+	INFO(error_message.utf8().get_data());
+	REQUIRE(error_code == 0);
+	check_order(expected);
+	CHECK(harness.undo_redo->undo());
+	check_order("ABC");
+	CHECK(harness.version() == before_version);
+	CHECK(harness.undo_redo->redo());
+	check_order(expected);
+}
+
 TEST_CASE("[GodotMCP][ScenePatch] Integer inputs reject fractions non-numbers and overflow") {
 	PatchHarness harness;
 	int error_code = 0;

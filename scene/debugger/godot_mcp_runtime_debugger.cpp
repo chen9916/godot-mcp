@@ -644,6 +644,8 @@ void GodotMCPRuntimeDebugger::_handle_input_action(const String &p_request_id, c
 
 void GodotMCPRuntimeDebugger::_handle_input_event(const String &p_request_id, const Dictionary &p_params) {
 	const String type = String(p_params.get("type", String())).to_lower();
+	// Account for earlier queued presses/releases before composing the mask.
+	Input::get_singleton()->flush_buffered_events();
 	Ref<InputEvent> event;
 	if (type == "mouse_motion") {
 		Ref<InputEventMouseMotion> motion;
@@ -659,7 +661,9 @@ void GodotMCPRuntimeDebugger::_handle_input_event(const String &p_request_id, co
 			return;
 		}
 		motion->set_position(position);
+		motion->set_global_position(position);
 		motion->set_relative(relative);
+		motion->set_button_mask(Input::get_singleton()->get_mouse_button_mask());
 		event = motion;
 	} else if (type == "mouse_button") {
 		const int button = (int)p_params.get("button_index", 0);
@@ -675,8 +679,17 @@ void GodotMCPRuntimeDebugger::_handle_input_event(const String &p_request_id, co
 			return;
 		}
 		mouse_button->set_position(position);
+		mouse_button->set_global_position(position);
 		mouse_button->set_button_index((MouseButton)button);
-		mouse_button->set_pressed(bool(p_params.get("pressed", true)));
+		const bool pressed = bool(p_params.get("pressed", true));
+		mouse_button->set_pressed(pressed);
+		BitField<MouseButtonMask> button_mask = Input::get_singleton()->get_mouse_button_mask();
+		if (pressed) {
+			button_mask.set_flag(mouse_button_to_mask((MouseButton)button));
+		} else {
+			button_mask.clear_flag(mouse_button_to_mask((MouseButton)button));
+		}
+		mouse_button->set_button_mask(button_mask);
 		mouse_button->set_double_click(bool(p_params.get("double_click", false)));
 		event = mouse_button;
 	} else {
@@ -684,6 +697,7 @@ void GodotMCPRuntimeDebugger::_handle_input_event(const String &p_request_id, co
 		return;
 	}
 	Input::get_singleton()->parse_input_event(event);
+	Input::get_singleton()->flush_buffered_events();
 	Dictionary data;
 	data["type"] = type;
 	data["process_frame"] = (int64_t)Engine::get_singleton()->get_process_frames();

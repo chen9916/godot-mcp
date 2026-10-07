@@ -85,6 +85,15 @@ test("requires ownership and confirmation before stopping a runtime", () => {
 	assert.deepEqual(stop.inputSchema.required, ["run_id", "confirm"]);
 });
 
+test("explicitly advertises arbitrary serializable runtime arguments", () => {
+	const call = get_tool_definition("godot.runtime.call");
+	assert.ok(call);
+	const properties = call.inputSchema.properties as Record<string, Record<string, unknown>>;
+	assert.equal(properties.arguments.type, "array");
+	assert.equal(properties.arguments.maxItems, 16);
+	assert.deepEqual(properties.arguments.items, {});
+});
+
 test("exposes partial project setting reads and non-destructive diagnostics", () => {
 	const settings = get_tool_definition("godot.project.get_setting");
 	const nodeProperties = get_tool_definition("godot.node.get_properties");

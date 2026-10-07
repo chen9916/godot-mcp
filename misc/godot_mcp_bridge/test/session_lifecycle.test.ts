@@ -4,6 +4,7 @@ import test from "node:test";
 import { RpcTransportError, type RpcClientLike } from "../src/rpc_client.js";
 import type { SessionData } from "../src/session.js";
 import { SessionLifecycle } from "../src/session_lifecycle.js";
+import { RequestCancelledError } from "../src/request_control.js";
 
 type CallHandler = (p_method: string, p_params: Record<string, unknown>) => Promise<unknown>;
 
@@ -169,4 +170,101 @@ test("shares one handshake across concurrent refreshes", async () => {
 	await Promise.all([first, second]);
 	assert.equal(client_count, 1);
 	assert.equal(lifecycle.get_info().state, "connected");
+});
+
+test("cancelled discovery cannot later dispatch a mutation", async () => {
+	let release: (() => void) | undefined;
+	let handshake_seen: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const seen = new Promise<void>((resolve) => { handshake_seen = resolve; });
+	let mutations = 0;
+	let candidate: FakeClient | undefined;
+	const lifecycle = new SessionLifecycle({
+		load_session: () => session("editor-a", 6601), max_reconnect_attempts: 0,
+		create_client: (metadata) => candidate = new FakeClient(metadata.port, async (method) => {
+			if (method === "godot.session.info") {
+				handshake_seen?.();
+				await gate;
+				return handshake("editor-a");
+			}
+			mutations++;
+			return { ok: true };
+		}),
+	});
+	const controller = new AbortController();
+	const rejected = assert.rejects(lifecycle.call("node.create", {}, { signal: controller.signal }), RequestCancelledError);
+	await seen;
+	controller.abort();
+	await rejected;
+	release?.();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(mutations, 0);
+	assert.equal(candidate?.closed, true);
+	assert.equal(lifecycle.get_info().state, "disconnected");
+	await lifecycle.close();
+});
+
+test("one cancelled caller preserves another caller's shared discovery", async () => {
+	let release: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	let clients = 0;
+	const lifecycle = new SessionLifecycle({
+		load_session: () => session("editor-a", 6701), max_reconnect_attempts: 0,
+		create_client: (metadata) => {
+			clients++;
+			return new FakeClient(metadata.port, async (method) => {
+				if (method === "godot.session.info") { await gate; return handshake("editor-a"); }
+				return { data: method };
+			});
+		},
+	});
+	const controller = new AbortController();
+	const rejected = assert.rejects(lifecycle.call("read.cancel", {}, { signal: controller.signal }), RequestCancelledError);
+	const survivor = lifecycle.call("read.survivor", {});
+	await new Promise((resolve) => setImmediate(resolve));
+	controller.abort();
+	await rejected;
+	release?.();
+	assert.deepEqual(await survivor, { data: "read.survivor" });
+	assert.equal(clients, 1);
+	await lifecycle.close();
+});
+
+test("a request deadline also bounds discovery backoff", async () => {
+	let attempts = 0;
+	const lifecycle = new SessionLifecycle({
+		load_session: () => { attempts++; throw new Error("not ready"); },
+		initial_backoff_ms: 1000, max_backoff_ms: 1000, max_reconnect_attempts: 3,
+	});
+	const started = Date.now();
+	await assert.rejects(lifecycle.call("node.create", {}, { deadline_ms: started + 100 }),
+		(error: unknown) => error instanceof RpcTransportError && error.code === "TIMEOUT");
+	await lifecycle.close();
+	assert.equal(attempts, 1);
+	assert.ok(Date.now() - started < 700);
+});
+
+test("closing during a pending handshake cannot restore a connected client", async () => {
+	let release: (() => void) | undefined;
+	let seen: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const handshake_seen = new Promise<void>((resolve) => { seen = resolve; });
+	let candidate: FakeClient | undefined;
+	const lifecycle = new SessionLifecycle({
+		load_session: () => session("editor-a", 6801), max_reconnect_attempts: 0,
+		create_client: (metadata) => candidate = new FakeClient(metadata.port, async () => {
+			seen?.();
+			await gate;
+			return handshake("editor-a");
+		}),
+	});
+	const rejected = assert.rejects(lifecycle.refresh(), RequestCancelledError);
+	await handshake_seen;
+	await lifecycle.close();
+	await rejected;
+	release?.();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(candidate?.closed, true);
+	assert.equal(lifecycle.get_active_session(), null);
+	assert.equal(lifecycle.get_info().state, "disconnected");
 });

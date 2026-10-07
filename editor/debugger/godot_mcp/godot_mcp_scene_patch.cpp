@@ -866,12 +866,27 @@ class PatchPlanner {
 		if (!p_parent) {
 			return -1;
 		}
-		for (int i = 0; i < p_parent->children.size(); i++) {
-			if (p_parent->children[i] == p_child) {
-				return i;
+		int index = 0;
+		for (const NodeState *child : p_parent->children) {
+			if (child->internal) {
+				continue;
 			}
+			if (child == p_child) {
+				return index;
+			}
+			index++;
 		}
 		return -1;
+	}
+
+	static int _child_count(const NodeState *p_parent) {
+		int count = 0;
+		for (const NodeState *child : p_parent->children) {
+			if (!child->internal) {
+				count++;
+			}
+		}
+		return count;
 	}
 
 	static void _remove_child_state(NodeState *p_parent, NodeState *p_child) {
@@ -887,11 +902,26 @@ class PatchPlanner {
 	}
 
 	static void _insert_child_state(NodeState *p_parent, NodeState *p_child, int p_position) {
-		if (p_position < 0 || p_position >= p_parent->children.size()) {
-			p_parent->children.push_back(p_child);
-		} else {
-			p_parent->children.insert(p_position, p_child);
+		// Patch positions, like Node::move_child(), count ordinary children only.
+		// Keep internal front/back children in their original ranges in the plan.
+		int insertion_index = p_parent->children.size();
+		int index = 0;
+		for (int i = 0; i < p_parent->children.size(); i++) {
+			const NodeState *child = p_parent->children[i];
+			if (child->internal) {
+				if (child->node->get_internal_mode() == Node::INTERNAL_MODE_BACK) {
+					insertion_index = i;
+					break;
+				}
+				continue;
+			}
+			if (index == p_position) {
+				insertion_index = i;
+				break;
+			}
+			index++;
 		}
+		p_parent->children.insert(insertion_index, p_child);
 		p_child->parent = p_parent;
 	}
 
@@ -2507,13 +2537,13 @@ class PatchPlanner {
 			memdelete(node);
 			return false;
 		}
-		if (requested_position > parent->children.size()) {
+		if (requested_position > _child_count(parent)) {
 			r_error_code = GodotMCPError::INVALID_ARGUMENT;
 			r_error_message = "INVALID_ARGUMENT: create_node position exceeds the proposed parent child count.";
 			memdelete(node);
 			return false;
 		}
-		const int final_position = requested_position < 0 ? parent->children.size() : requested_position;
+		const int final_position = requested_position < 0 ? _child_count(parent) : requested_position;
 		node->set_name(node_name);
 
 		NodeState *state = memnew(NodeState);
@@ -2672,7 +2702,7 @@ class PatchPlanner {
 		if (!_parse_position(p_input, requested_position, r_error_code, r_error_message)) {
 			return false;
 		}
-		const int destination_count = new_parent->children.size() - (state->parent == new_parent ? 1 : 0);
+		const int destination_count = _child_count(new_parent) - (state->parent == new_parent ? 1 : 0);
 		if (requested_position > destination_count) {
 			r_error_code = GodotMCPError::INVALID_ARGUMENT;
 			r_error_message = "INVALID_ARGUMENT: move_node position exceeds the proposed destination child count.";

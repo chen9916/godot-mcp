@@ -5,11 +5,44 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const run = promisify(execFile);
+
+async function copy_bridge_runtime(source: string, target: string, signal: AbortSignal): Promise<number> {
+	const copies: Array<[string, string]> = [];
+	const lock = JSON.parse(await fs.readFile(path.join(source, "package-lock.json"), "utf8"));
+	const collect = async (relative: string): Promise<void> => {
+		signal.throwIfAborted();
+		for (const entry of await fs.readdir(path.join(source, relative), { withFileTypes: true })) {
+			const filename = path.join(relative, entry.name);
+			if (entry.isDirectory()) {
+				// Nested installed dependencies have their own lockfile entries.
+				if (entry.name !== "node_modules") await collect(filename);
+			} else if (entry.isFile() && /\.(?:[cm]?js|json|node|wasm)$/u.test(entry.name)) {
+				copies.push([path.join(source, filename), path.join(target, filename)]);
+			}
+		}
+	};
+	for (const [name, metadata] of Object.entries(lock.packages) as Array<[string, { dev?: boolean }]>) {
+		if (name && !metadata.dev) await collect(name);
+	}
+	for (const entry of await fs.readdir(path.join(source, "src"))) {
+		if (entry.endsWith(".ts")) copies.push([path.join(source, "dist", entry.replace(/\.ts$/u, ".js")), path.join(target, "dist", entry.replace(/\.ts$/u, ".js"))]);
+	}
+	for (const name of ["package.json", "package-lock.json"]) copies.push([path.join(source, name), path.join(target, name)]);
+	for (const directory of new Set(copies.map(([, to]) => path.dirname(to)))) await fs.mkdir(directory, { recursive: true });
+	// Many small dependency files can dominate setup on Windows. Bound parallel
+	// copies and omit dev tools/types/maps instead of copying the entire dev tree.
+	for (let index = 0; index < copies.length; index += 16) {
+		signal.throwIfAborted();
+		await Promise.all(copies.slice(index, index + 16).map(([from, to]) => fs.copyFile(from, to)));
+	}
+	return copies.length;
+}
 
 // This plugin drives the real settings menu, category tree, and setup button.
 const plugin = `@tool
@@ -156,34 +189,54 @@ test("Godot settings exports a client-neutral connection and retries in portable
 	timeout: 180_000,
 }, async (t) => {
 	const editor = path.resolve(process.env.GODOT_MCP_SETUP_EDITOR!);
-	const source = path.resolve(".");
+	const source = fileURLToPath(new URL("../../", import.meta.url));
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "godot setup UI 婕㈠瓧 "));
-	t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+	let active_editor: ReturnType<typeof run> | undefined;
+	let active_editor_closed: Promise<void> | undefined;
+	t.after(async () => {
+		await active_editor_closed;
+		await active_editor?.catch(() => {});
+		assert.equal(path.dirname(directory), os.tmpdir());
+		await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+	});
 	let bundle = path.join(directory, "Portable Godot");
 	await fs.mkdir(path.join(bundle, "runtime"), { recursive: true });
 	await fs.mkdir(path.join(bundle, "bridge"));
 	await fs.copyFile(editor, path.join(bundle, "Godot.exe"));
 	await fs.copyFile(process.execPath, path.join(bundle, "runtime", "node.exe"));
 	await fs.writeFile(path.join(bundle, "_sc_"), "");
-	await fs.cp(path.join(source, "dist"), path.join(bundle, "bridge", "dist"), { recursive: true });
-	await fs.cp(path.join(source, "node_modules"), path.join(bundle, "bridge", "node_modules"), { recursive: true });
-	await fs.copyFile(path.join(source, "package.json"), path.join(bundle, "bridge", "package.json"));
+	const preparation_started = Date.now();
+	console.log("Godot setup: preparing isolated production runtime.");
+	const copied = await copy_bridge_runtime(source, path.join(bundle, "bridge"), t.signal);
+	console.log(`Godot setup: prepared ${copied} production runtime files in ${Date.now() - preparation_started}ms.`);
 	const project = path.join(directory, "Test Project");
 	await fs.mkdir(path.join(project, "addons", "setup_test"), { recursive: true });
 	await fs.writeFile(path.join(project, "project.godot"), '[application]\nconfig/name="Bridge Setup Test"\n[editor_plugins]\nenabled=PackedStringArray("res://addons/setup_test/plugin.cfg")\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n');
 	await fs.writeFile(path.join(project, "addons", "setup_test", "plugin.cfg"), '[plugin]\nname="Bridge Setup Test"\ndescription="Isolated setup verification"\nauthor="Godot tests"\nversion="1.0"\nscript="plugin.gd"\n');
 	await fs.writeFile(path.join(project, "addons", "setup_test", "plugin.gd"), plugin);
 	for (let attempt = 0; attempt < 3; attempt++) {
+		t.signal.throwIfAborted();
+		console.log(`Godot setup: launching editor in ${attempt === 0 ? "portable" : attempt === 1 ? "moved portable" : "source"} layout.`);
 		const report = path.join(directory, `result-${attempt}.json`);
+		await fs.mkdir(path.join(bundle, "editor_data"), { recursive: true });
+		await fs.writeFile(path.join(bundle, "editor_data", "projects.cfg"), `[${project.split(path.sep).join("/")}]\nfavorite=false\n`);
+		const abort = new AbortController();
+		const abort_editor = () => abort.abort();
+		t.signal.addEventListener("abort", abort_editor, { once: true });
 		const editor_run = run(path.join(bundle, "Godot.exe"), ["--headless", "--editor", "--path", project], {
 			timeout: 70_000,
 			windowsHide: true,
 			maxBuffer: 2 * 1024 * 1024,
+			signal: abort.signal,
 			env: { ...process.env, PATH: path.dirname(process.execPath) + path.delimiter + (process.env.PATH ?? ""), GODOT_MCP_SETUP_RESULT: report },
 		});
+		active_editor = editor_run;
+		const editor_closed = new Promise<void>(resolve => editor_run.child.once("close", () => resolve()));
+		active_editor_closed = editor_closed;
 		const wait_for_report = async () => {
 			const deadline = Date.now() + 50_000;
 			while (Date.now() < deadline) {
+				if (abort.signal.aborted) throw new Error("Editor setup was cancelled.");
 				try {
 					return JSON.parse(await fs.readFile(report, "utf8"));
 				} catch (error: any) {
@@ -193,29 +246,53 @@ test("Godot settings exports a client-neutral connection and retries in portable
 			}
 			throw new Error("Editor setup report timed out.");
 		};
-		const result = await Promise.race([wait_for_report(), editor_run.then(({ stdout, stderr }) => {
-			throw new Error("Editor exited before reporting setup: " + stdout + stderr);
-		})]);
+		let result: { ok: boolean; exported: string };
+		let failed = false;
 		try {
+			result = await Promise.race([wait_for_report(), editor_run.then(({ stdout, stderr }) => {
+				throw new Error("Editor exited before reporting setup: " + stdout + stderr);
+			})]);
 			const launch = JSON.parse(result.exported).mcpServers.godot;
+			const isolated_environment = { ...process.env, APPDATA: path.join(directory, "AppData") };
+			if (attempt === 0) {
+				const config = path.join(directory, "disposable-antigravity.json");
+				const registered = JSON.parse((await run(launch.command, [launch.args[0], "setup", "--client", "antigravity", "--config", config, "--json"], {
+					cwd: directory, env: isolated_environment, timeout: 15_000, windowsHide: true,
+				})).stdout)[0];
+				assert.equal(registered.registered, true);
+				assert.equal(registered.checks.editor.ok, true, "Unpinned portable setup must find the bundled editor's recent project.");
+			}
 			for (const command of [[launch.command, ...launch.args]]) {
-				const transport = new StdioClientTransport({ command: command[0], args: command.slice(1), cwd: project, stderr: "pipe" });
+				const transport = new StdioClientTransport({ command: command[0], args: command.slice(1), cwd: directory, env: isolated_environment, stderr: "pipe" });
 				const client = new Client({ name: "setup-verification", version: "1" }, { capabilities: {} });
 				try {
-					await client.connect(transport);
+					await client.connect(transport, { timeout: 10_000, signal: t.signal });
 					assert.equal(client.getServerVersion()?.name, "godot-mcp");
-					assert.ok((await client.listTools()).tools.length >= 74);
-					const info = await client.callTool({ name: "godot.session.info", arguments: {} });
+					assert.ok((await client.listTools(undefined, { timeout: 10_000, signal: t.signal })).tools.length >= 74);
+					const info = await client.callTool({ name: "godot.session.info", arguments: {} }, undefined, { timeout: 10_000, signal: t.signal });
 					assert.equal((info.structuredContent as any).data.bridge.state, "connected");
 					assert.ok((info.structuredContent as any).data.editor);
 				} finally {
 					await client.close();
 				}
 			}
+		} catch (error) {
+			failed = true;
+			abort.abort();
+			await editor_run.catch(() => {});
+			await editor_closed;
+			throw error;
 		} finally {
 			await fs.writeFile(report + ".done", "");
-			const { stdout, stderr } = await editor_run;
-			assert.doesNotMatch(stdout + stderr, /SCRIPT ERROR:|ERROR:/);
+			try {
+				const output = await editor_run.catch(error => { if (!failed) throw error; return undefined; });
+				if (output) assert.doesNotMatch(output.stdout + output.stderr, /SCRIPT ERROR:|ERROR:/);
+			} finally {
+				await editor_closed;
+				t.signal.removeEventListener("abort", abort_editor);
+				active_editor = undefined;
+				active_editor_closed = undefined;
+			}
 		}
 		assert.equal(result.ok, true);
 		const launch = JSON.parse(result.exported).mcpServers.godot;

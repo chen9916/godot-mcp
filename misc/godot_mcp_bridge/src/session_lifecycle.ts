@@ -1,4 +1,5 @@
 import { GodotRpcClient, RpcTransportError, type RpcClientLike } from "./rpc_client.js";
+import { check_request_limits, request_delay, with_request_limits, type RequestLimits } from "./request_control.js";
 import {
 	get_session_identity,
 	load_session,
@@ -18,7 +19,7 @@ export interface SessionLifecycleOptions extends SessionLoadOptions {
 	sleep?: (p_delay_ms: number) => Promise<void>;
 }
 
-export interface SessionCallOptions {
+export interface SessionCallOptions extends RequestLimits {
 	retry_safe?: boolean;
 }
 
@@ -46,8 +47,8 @@ export class SessionLifecycleError extends Error {
 	}
 }
 
-function _default_sleep(p_delay_ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, p_delay_ms));
+function _default_sleep(p_delay_ms: number, p_signal?: AbortSignal): Promise<void> {
+	return request_delay(p_delay_ms, { signal: p_signal }, () => new RpcTransportError("Session discovery timed out.", "TIMEOUT"));
 }
 
 function _extract_handshake_session_id(p_result: unknown): string | undefined {
@@ -71,13 +72,17 @@ export class SessionLifecycle {
 	private readonly max_backoff_ms: number;
 	private readonly session_loader: (p_options: SessionLoadOptions) => SessionData;
 	private readonly client_factory: (p_session: SessionData) => RpcClientLike;
-	private readonly sleep: (p_delay_ms: number) => Promise<void>;
+	private readonly sleep: (p_delay_ms: number, p_signal?: AbortSignal) => Promise<void>;
 
 	private state: ConnectionState = "disconnected";
 	private active_session: SessionData | null = null;
 	private active_identity: string | null = null;
 	private client: RpcClientLike | null = null;
-	private connection_attempt: Promise<{ client: RpcClientLike; session: SessionData }> | null = null;
+	private connection_attempt: {
+		promise: Promise<{ client: RpcClientLike; session: SessionData }>;
+		controller: AbortController;
+		waiters: number;
+	} | null = null;
 	private reconnect_attempt = 0;
 	private last_error: string | undefined;
 
@@ -117,7 +122,11 @@ export class SessionLifecycle {
 		};
 	}
 
-	private async _discard_client(p_state: ConnectionState): Promise<void> {
+	private async _discard_client(p_state: ConnectionState, p_expected_client?: RpcClientLike): Promise<void> {
+		// An old request failing must not close a newly connected client.
+		if (p_expected_client && this.client !== p_expected_client) {
+			return;
+		}
 		const client = this.client;
 		this.client = null;
 		this.active_session = null;
@@ -128,7 +137,9 @@ export class SessionLifecycle {
 		}
 	}
 
-	private async _connect_once(): Promise<{ client: RpcClientLike; session: SessionData }> {
+	private async _connect_once(p_signal: AbortSignal): Promise<{ client: RpcClientLike; session: SessionData }> {
+		const limits = { signal: p_signal };
+		check_request_limits(limits, () => new RpcTransportError("Session discovery timed out.", "TIMEOUT"));
 		const session = this.session_loader(this.load_options);
 		const identity = get_session_identity(session);
 
@@ -144,7 +155,10 @@ export class SessionLifecycle {
 
 		const candidate = this.client_factory(session);
 		try {
-			const handshake = await candidate.call("godot.session.info", session.session_id ? { _session_id: session.session_id } : {});
+			const handshake = await with_request_limits(
+				() => candidate.call("godot.session.info", session.session_id ? { _session_id: session.session_id } : {}, limits),
+				limits, () => new RpcTransportError("Session handshake timed out.", "TIMEOUT"),
+			);
 			const handshake_session_id = _extract_handshake_session_id(handshake);
 			if (session.session_id && handshake_session_id !== session.session_id) {
 				throw new SessionLifecycleError(
@@ -165,16 +179,17 @@ export class SessionLifecycle {
 		return { client: candidate, session };
 	}
 
-	private async _perform_connect_with_backoff(): Promise<{ client: RpcClientLike; session: SessionData }> {
+	private async _perform_connect_with_backoff(p_signal: AbortSignal): Promise<{ client: RpcClientLike; session: SessionData }> {
 		let last_error: unknown;
 		for (let attempt = 0; attempt <= this.max_reconnect_attempts; attempt++) {
 			this.reconnect_attempt = attempt;
 			this.state = attempt === 0 && !this.active_session ? "disconnected" : "reconnecting";
 			try {
-				const connection = await this._connect_once();
+				const connection = await this._connect_once(p_signal);
 				this.reconnect_attempt = 0;
 				return connection;
 			} catch (error: unknown) {
+				check_request_limits({ signal: p_signal }, () => new RpcTransportError("Session discovery timed out.", "TIMEOUT"));
 				last_error = error;
 				this.last_error = error instanceof Error ? error.message : String(error);
 				if (attempt >= this.max_reconnect_attempts) {
@@ -182,7 +197,8 @@ export class SessionLifecycle {
 				}
 				this.state = "reconnecting";
 				const delay = Math.min(this.max_backoff_ms, this.initial_backoff_ms * (2 ** attempt));
-				await this.sleep(delay);
+				await with_request_limits(() => this.sleep(delay, p_signal), { signal: p_signal },
+					() => new RpcTransportError("Session discovery timed out.", "TIMEOUT"));
 			}
 		}
 
@@ -193,57 +209,75 @@ export class SessionLifecycle {
 		throw new SessionLifecycleError("RECONNECT_FAILED", "Could not discover and connect to a Godot editor session.");
 	}
 
-	private async _connect_with_backoff(): Promise<{ client: RpcClientLike; session: SessionData }> {
-		if (this.connection_attempt) {
-			return await this.connection_attempt;
+	private async _connect_with_backoff(p_options: RequestLimits = {}): Promise<{ client: RpcClientLike; session: SessionData }> {
+		const timeout_error = (): RpcTransportError => new RpcTransportError("Session discovery exceeded the request deadline.", "TIMEOUT");
+		check_request_limits(p_options, timeout_error);
+		if (!this.connection_attempt) {
+			const controller = new AbortController();
+			const attempt = { controller, waiters: 0, promise: this._perform_connect_with_backoff(controller.signal) };
+			this.connection_attempt = attempt;
+			void attempt.promise.finally(() => {
+				if (this.connection_attempt === attempt) {
+					this.connection_attempt = null;
+				}
+			}).catch(() => undefined);
 		}
-
-		const attempt = this._perform_connect_with_backoff();
-		this.connection_attempt = attempt;
+		const attempt = this.connection_attempt;
+		attempt.waiters++;
 		try {
-			return await attempt;
+			return await with_request_limits(() => attempt.promise, p_options, timeout_error);
 		} finally {
-			if (this.connection_attempt === attempt) {
+			attempt.waiters--;
+			if (attempt.waiters === 0 && this.connection_attempt === attempt) {
 				this.connection_attempt = null;
+				attempt.controller.abort();
+				this.state = this.client ? "connected" : "disconnected";
 			}
 		}
 	}
 
-	async refresh(): Promise<SessionLifecycleInfo> {
-		await this._connect_with_backoff();
+	async refresh(p_options: RequestLimits = {}): Promise<SessionLifecycleInfo> {
+		await this._connect_with_backoff(p_options);
 		return this.get_info();
 	}
 
 	async call(p_method: string, p_params: Record<string, unknown>, p_options: SessionCallOptions = {}): Promise<unknown> {
-		let connection = await this._connect_with_backoff();
+		const timeout_error = (): RpcTransportError => new RpcTransportError(`Request deadline exceeded for '${p_method}'. An operation already sent may still complete.`, "TIMEOUT");
+		let connection = await this._connect_with_backoff(p_options);
 		const params = { ...p_params };
 		if (connection.session.session_id) {
 			params._session_id = connection.session.session_id;
 		}
 
 		try {
-			return await connection.client.call(p_method, params);
+			return await with_request_limits(() => connection.client.call(p_method, params, p_options), p_options, timeout_error);
 		} catch (error: unknown) {
 			if (!(error instanceof RpcTransportError)) {
 				throw error;
 			}
+			check_request_limits(p_options, timeout_error);
 
 			this.last_error = error.message;
-			await this._discard_client("disconnected");
+			await with_request_limits(() => this._discard_client("disconnected", connection.client), p_options, timeout_error);
 			if (!p_options.retry_safe) {
 				throw error;
 			}
 
-			connection = await this._connect_with_backoff();
+			connection = await this._connect_with_backoff(p_options);
 			const retry_params = { ...p_params };
 			if (connection.session.session_id) {
 				retry_params._session_id = connection.session.session_id;
 			}
-			return await connection.client.call(p_method, retry_params);
+			return await with_request_limits(() => connection.client.call(p_method, retry_params, p_options), p_options, timeout_error);
 		}
 	}
 
 	async close(): Promise<void> {
+		const attempt = this.connection_attempt;
+		attempt?.controller.abort();
+		if (attempt) {
+			await attempt.promise.catch(() => undefined);
+		}
 		await this._discard_client("disconnected");
 		this.last_error = undefined;
 		this.reconnect_attempt = 0;

@@ -62,6 +62,8 @@ test("independent stdio MCP clients discover and call the same Godot tools indep
 		try {
 			await client.connect(transport);
 			assert.equal(client.getServerVersion()?.name, "godot-mcp");
+			const package_info = JSON.parse(await fs.readFile(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
+			assert.equal(client.getServerVersion()?.version, package_info.version);
 			const { tools } = await client.listTools();
 			const names = tools.map((tool) => tool.name);
 			assert.ok(names.includes("godot.scene.get_active"));

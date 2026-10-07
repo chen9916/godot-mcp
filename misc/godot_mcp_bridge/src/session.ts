@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { GodotCapability } from "./tool_registry.js";
 
@@ -115,6 +116,22 @@ function _to_unix_seconds(p_value: unknown, p_name: string): number {
 
 function _get_godot_projects_cfg_candidates(): string[] {
 	const candidates: string[] = [];
+	// Resolve the editor belonging to this bridge, rather than assuming that the
+	// client's working directory is the portable installation or game project.
+	const module_directory = path.dirname(fileURLToPath(import.meta.url));
+	const bridge_directory = path.basename(module_directory) === "dist"
+		? path.dirname(module_directory)
+		: path.basename(module_directory) === "src" && path.basename(path.dirname(module_directory)) === ".test-dist"
+			? path.resolve(module_directory, "../..") : undefined;
+	let editor_directory: string | undefined;
+	if (bridge_directory && path.basename(bridge_directory) === "bridge") {
+		editor_directory = path.dirname(bridge_directory);
+	} else if (bridge_directory && path.basename(bridge_directory) === "godot_mcp_bridge" && path.basename(path.dirname(bridge_directory)) === "misc") {
+		editor_directory = path.resolve(bridge_directory, "../../bin");
+	}
+	if (editor_directory && ["_sc_", "._sc_"].some(name => fs.existsSync(path.join(editor_directory, name)))) {
+		candidates.push(path.join(editor_directory, "editor_data", "projects.cfg"));
+	}
 	if (process.platform === "win32") {
 		const appdata = process.env.APPDATA;
 		if (appdata) {
@@ -129,64 +146,57 @@ function _get_godot_projects_cfg_candidates(): string[] {
 	return candidates;
 }
 
-function _read_recent_project_roots(): string[] {
-	for (const cfg_path of _get_godot_projects_cfg_candidates()) {
-		if (!fs.existsSync(cfg_path)) {
-			continue;
-		}
-
-		let content = "";
-		try {
-			content = fs.readFileSync(cfg_path, "utf8");
-		} catch {
-			continue;
-		}
-
-		const roots: string[] = [];
-		for (const raw_line of content.split(/\r?\n/)) {
-			const line = raw_line.trim();
-			if (!line.startsWith("[") || !line.endsWith("]") || line.length < 3) {
-				continue;
-			}
-			const section = line.slice(1, -1).trim();
-			if (!section || !path.isAbsolute(section)) {
-				continue;
-			}
-			roots.push(path.resolve(section));
-		}
-
-		if (roots.length > 0) {
-			return roots;
-		}
+function _read_recent_project_roots(cfg_path: string): string[] {
+	let content: string;
+	try {
+		content = fs.readFileSync(cfg_path, "utf8");
+	} catch {
+		return [];
 	}
-
-	return [];
+	const roots: string[] = [];
+	for (const raw_line of content.split(/\r?\n/)) {
+		const line = raw_line.trim();
+		if (!line.startsWith("[") || !line.endsWith("]") || line.length < 3) {
+			continue;
+		}
+		const section = line.slice(1, -1).trim();
+		if (!section || !path.isAbsolute(section)) {
+			continue;
+		}
+		roots.push(path.resolve(section));
+	}
+	return roots;
 }
 
 function _auto_detect_session_file_from_recent_projects(): string | null {
-	const candidates: Array<{ session_path: string; mtime_ms: number }> = [];
-	for (const project_root of _read_recent_project_roots()) {
-		const session_path = path.join(project_root, ".godot", "godot_mcp", "session.json");
-		if (!fs.existsSync(session_path)) {
+	// A matching portable installation's registry wins over the unrelated
+	// global registry. Fall back when it has no available session metadata.
+	for (const cfg_path of _get_godot_projects_cfg_candidates()) {
+		const candidates: Array<{ session_path: string; mtime_ms: number }> = [];
+		for (const project_root of _read_recent_project_roots(cfg_path)) {
+			const session_path = path.join(project_root, ".godot", "godot_mcp", "session.json");
+			if (!fs.existsSync(session_path)) {
+				continue;
+			}
+
+			let mtime_ms = 0;
+			try {
+				mtime_ms = fs.statSync(session_path).mtimeMs;
+			} catch {
+				mtime_ms = 0;
+			}
+
+			candidates.push({ session_path, mtime_ms });
+		}
+
+		if (candidates.length === 0) {
 			continue;
 		}
 
-		let mtime_ms = 0;
-		try {
-			mtime_ms = fs.statSync(session_path).mtimeMs;
-		} catch {
-			mtime_ms = 0;
-		}
-
-		candidates.push({ session_path, mtime_ms });
+		candidates.sort((p_a, p_b) => p_b.mtime_ms - p_a.mtime_ms);
+		return candidates[0].session_path;
 	}
-
-	if (candidates.length === 0) {
-		return null;
-	}
-
-	candidates.sort((p_a, p_b) => p_b.mtime_ms - p_a.mtime_ms);
-	return candidates[0].session_path;
+	return null;
 }
 
 export function resolve_session_file_path(p_options: SessionLoadOptions = {}): string {

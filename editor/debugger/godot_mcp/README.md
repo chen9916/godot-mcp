@@ -296,6 +296,7 @@ the other editor RPC methods. Public MCP names and input schemas are defined in
     - `search_root` (default `res://`),
     - `file_limit` (default `300`).
   - Currently supports GDScript targets only.
+  - `findReferences` is a bounded identifier-token search, not a semantic rename index. It excludes comments and strings, but may include unrelated same-named symbols. Responses declare `approximate: true`, `search_kind: "identifier_tokens"`, and `truncated`; limits are 300 files, 5,000 locations, and 1 Mi characters per file. `include_declaration: false` excludes the resolved declaration rather than the queried usage.
 
 ### Resource operations
 
@@ -321,6 +322,9 @@ the other editor RPC methods. Public MCP names and input schemas are defined in
 - `resource.create`
   - Creates a new resource in memory by class name.
   - Required param: `type`. Optional params: `path`, `properties`, `property_entries`.
+  - Returns an addressable `res://` path. If omitted, a unique `res://mcp_resource_<session>_<counter>.tres` path is assigned without writing a file. Explicit paths must be canonical and unused on disk or in the resource cache.
+  - Scene extensions (`.tscn` and `.scn`) are reserved for `scene.create`. Resource get, set, and save paths must also be canonical `res://` paths; aliases containing `.` or `..` are rejected.
+  - The editor retains up to 128 unsaved created resources until successful save or MCP shutdown. Save resources to release capacity; failed requests do not consume it. Saving refuses to overwrite a file that appeared at a pending resource's path after creation.
   - `properties` and `property_entries` are mutually exclusive.
   - Type coercion accepts deterministic shapes for common types:
     - `Vector2`/`Vector3`/`Vector4`: native, array, or `{x,y[,z[,w]]}` dictionary.

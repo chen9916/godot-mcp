@@ -10,6 +10,7 @@ import {
 	type RpcCaller,
 } from "../src/operation_waiter.js";
 import { RpcMethodError, RpcTransportError } from "../src/rpc_client.js";
+import { RequestCancelledError } from "../src/request_control.js";
 
 class SequenceCaller implements RpcCaller {
 	readonly calls: Array<{ method: string; args: Record<string, unknown>; retry_safe?: boolean }> = [];
@@ -89,4 +90,49 @@ test("acknowledges a completed runtime error before returning it", async () => {
 	);
 	assert.equal(calls.length, 2);
 	assert.equal(calls[1]._request_ack, true);
+});
+
+test("bounds an outstanding filesystem RPC by the operation deadline", async () => {
+	const caller: RpcCaller = { call: async () => await new Promise(() => {}) };
+	await assert.rejects(wait_for_filesystem(caller, { timeout_ms: 100 }),
+		(error: unknown) => error instanceof RpcTransportError && error.code === "TIMEOUT");
+});
+
+test("bounds runtime RPC and does not acknowledge an uncertain timeout", async () => {
+	const args_seen: Record<string, unknown>[] = [];
+	const caller: RpcCaller = { call: async (_method, args) => {
+		args_seen.push(args);
+		return await new Promise(() => {});
+	} };
+	await assert.rejects(wait_for_runtime_operation(caller, "runtime.call", { timeout_ms: 100 }, "uncertain"),
+		(error: unknown) => error instanceof RpcTransportError && error.code === "TIMEOUT");
+	assert.equal(args_seen.length, 1);
+	assert.equal(args_seen[0]._request_id, "uncertain");
+	assert.equal(args_seen[0]._request_ack, undefined);
+});
+
+test("acknowledgment failure stays within the operation budget and preserves a completed result", async () => {
+	let polls = 0;
+	const result = { data: { pending: false, result: 42 } };
+	const caller: RpcCaller = { call: async (_method, args) => {
+		polls++;
+		return args._request_ack ? await new Promise(() => {}) : result;
+	} };
+	const started = Date.now();
+	assert.deepEqual(await wait_for_runtime_operation(caller, "runtime.call", { timeout_ms: 100 }, "complete"), result);
+	assert.equal(polls, 2);
+	assert.ok(Date.now() - started < 700);
+});
+
+test("cancellation stops pending polling without acknowledging the operation", async () => {
+	const controller = new AbortController();
+	const calls: Record<string, unknown>[] = [];
+	const caller: RpcCaller = { call: async (_method, args) => {
+		calls.push(args);
+		controller.abort();
+		return { data: { pending: true } };
+	} };
+	await assert.rejects(wait_for_runtime_operation(caller, "runtime.call", { timeout_ms: 1000 }, "cancelled", { signal: controller.signal }), RequestCancelledError);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]._request_ack, undefined);
 });

@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/io/resource.h"
 #include "core/io/stream_peer_tcp.h"
 #include "core/io/tcp_server.h"
 #include "core/os/os.h"
@@ -70,10 +71,11 @@ public:
 private:
 	struct Client {
 		Ref<StreamPeerTCP> peer;
-		String read_buffer;
+		PackedByteArray read_buffer;
 	};
 
 	static constexpr int MAX_REQUEST_BYTES = 1024 * 1024;
+	static constexpr int MAX_CREATED_RESOURCES = 128;
 
 	Ref<TCPServer> server;
 	LocalVector<Client> clients;
@@ -84,6 +86,8 @@ private:
 	String current_operation;
 	Dictionary capabilities;
 	Dictionary method_error_details;
+	HashMap<String, Ref<Resource>> created_resources;
+	uint64_t created_resource_counter = 0;
 
 	GodotMCPDiagnosticsStore diagnostics_store;
 	GodotMCPFilesystemSync filesystem_sync;

@@ -7,7 +7,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 
 import { as_error_text } from "./error_map.js";
 import { bridge_command } from "./connection_config.js";
-import { is_async_runtime_method, wait_for_filesystem, wait_for_runtime_operation } from "./operation_waiter.js";
+import { is_async_runtime_method, operation_timeout_ms, wait_for_filesystem, wait_for_runtime_operation } from "./operation_waiter.js";
 import { to_mcp_error, to_structured_error } from "./protocol_error.js";
 import { session_has_capability } from "./session.js";
 import { SessionLifecycle } from "./session_lifecycle.js";
@@ -109,7 +109,7 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 	const server = new Server(
 		{
 			name: "godot-mcp",
-			version: "0.1.0",
+			version: "0.2.0",
 		},
 		{
 			capabilities: {
@@ -130,7 +130,7 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 		};
 	});
 
-	server.setRequestHandler(CallToolRequestSchema, async (p_request) => {
+	server.setRequestHandler(CallToolRequestSchema, async (p_request, p_extra) => {
 		const tool_name = p_request.params.name;
 		const tool = get_tool_definition(tool_name);
 		if (!tool) {
@@ -157,13 +157,18 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 		delete args._token;
 
 		try {
+			const limits = {
+				signal: p_extra.signal,
+				...(tool.method === "filesystem.wait" || is_async_runtime_method(tool.method)
+					? { deadline_ms: Date.now() + operation_timeout_ms(args) } : {}),
+			};
 			if (tool.method === "bridge.scene.patch_schema") {
 				return _to_mcp_success({ ok: true, data: get_scene_patch_schema_document(), warnings: [] });
 			}
 			if (tool.method === "godot.session.info") {
 				try {
-					await lifecycle.refresh();
-					const editor = await lifecycle.call(tool.method, args, { retry_safe: true });
+					await lifecycle.refresh(limits);
+					const editor = await lifecycle.call(tool.method, args, { ...limits, retry_safe: true });
 					return _to_mcp_success({
 						ok: true,
 						data: {
@@ -184,7 +189,7 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 				}
 			}
 
-			await lifecycle.refresh();
+			await lifecycle.refresh(limits);
 			const session = lifecycle.get_active_session();
 			if (!session) {
 				throw new Error("Session lifecycle reported connected without active session metadata.");
@@ -206,10 +211,10 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 			}
 
 			const result = tool.method === "filesystem.wait"
-				? await wait_for_filesystem(lifecycle, args)
+				? await wait_for_filesystem(lifecycle, args, limits)
 				: is_async_runtime_method(tool.method)
-					? await wait_for_runtime_operation(lifecycle, tool.method, args)
-					: await lifecycle.call(tool.method, args, { retry_safe: is_tool_retry_safe(tool) });
+					? await wait_for_runtime_operation(lifecycle, tool.method, args, undefined, limits)
+					: await lifecycle.call(tool.method, args, { ...limits, retry_safe: is_tool_retry_safe(tool) });
 			return _to_mcp_success(result);
 		} catch (error: unknown) {
 			const session = lifecycle.get_active_session();

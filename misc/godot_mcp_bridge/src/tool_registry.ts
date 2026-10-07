@@ -1680,7 +1680,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 			type: "object", additionalProperties: false, required: ["run_id", "node_path", "method"],
 			properties: {
 				run_id: { type: "string" }, node_path: { type: "string" }, method: { type: "string" },
-				arguments: { type: "array", maxItems: 16 },
+				arguments: { type: "array", maxItems: 16, items: {} },
 				confirm_destructive: { type: "boolean", description: "Required for free or queue_free" },
 				timeout_ms: { type: "integer", minimum: 100, maximum: 60000 },
 			},

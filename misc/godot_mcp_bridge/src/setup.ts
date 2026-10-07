@@ -189,7 +189,7 @@ export async function run_setup_cli(p_args: string[], p_bridge_script: string): 
 	if (command === "doctor" && !options.clients.length) {
 		const report = await diagnose_connection(launch, options.timeout_ms);
 		if (options.json) { process.stdout.write(JSON.stringify(report, null, 2) + "\n"); } else { _print_report(report); }
-		if (!report.ok) { process.exitCode = 2; }
+		if (!report.ok) { process.exitCode = report.bridge.ok ? 2 : 1; }
 		return;
 	}
 	const results: Array<Record<string, unknown>> = [];
@@ -206,7 +206,8 @@ export async function run_setup_cli(p_args: string[], p_bridge_script: string): 
 				const report = await diagnose_connection(existing.launch, options.timeout_ms);
 				results.push({ client, config_path, registered: true, ...report, reload: RELOAD[client] });
 				if (!options.json) { process.stdout.write(`${LABELS[client]}: ${config_path}\n`); _print_report(report); }
-				if (!report.ok && process.exitCode !== 1) { process.exitCode = 2; }
+				if (!report.bridge.ok) { process.exitCode = 1; }
+				else if (!report.ok && process.exitCode !== 1) { process.exitCode = 2; }
 				continue;
 			}
 			if (existing.present && !options.replace) {

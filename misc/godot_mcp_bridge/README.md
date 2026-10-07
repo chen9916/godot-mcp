@@ -140,7 +140,7 @@ The `mcp` format contains a complete `mcpServers` JSON object. The `connection` 
 
 ## Project selection and manual launch
 
-The game project contains `project.godot`; its session metadata is `.godot/godot_mcp/session.json`. Use `--project-root` when several editors are open, or `--session-file` to select an explicit metadata file. Without either pin, discovery walks upward from the working directory, then checks Godot's recent projects for the most recently modified session file.
+The game project contains `project.godot`; its session metadata is `.godot/godot_mcp/session.json`. Use `--project-root` when several editors are open, or `--session-file` to select an explicit metadata file. Without either pin, discovery walks upward from the working directory, then checks the matching portable editor's `editor_data/projects.cfg` when its `_sc_` or `._sc_` marker exists. It falls back to Godot's normal user registry when that portable registry has no session metadata. Within each registry it selects the most recently modified session file. This also covers self-contained source editors in `bin/`.
 
 ```bash
 node dist/main.js --project-root "<game-project>"
@@ -176,3 +176,8 @@ The contracts describe intended behavior. Check [MCP status](../../MCP_STATUS.md
 - Configuration export cannot find the bridge or Node: build the source bridge, check the portable layout, or set the advanced paths explicitly.
 
 The editor endpoint binds to `127.0.0.1`.
+MCP cancellation stops bridge discovery, polling, and local pending requests.
+Filesystem/runtime `timeout_ms` bounds the full operation, including reconnects
+and acknowledgments. Cancellation or timeout cannot undo a mutation already
+sent to the editor; inspect state before retrying an ambiguous write. Runtime
+operations preserve their deduplication record when completion is uncertain.

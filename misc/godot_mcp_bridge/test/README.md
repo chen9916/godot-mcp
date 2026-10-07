@@ -11,9 +11,22 @@ npm.cmd ci
 npm.cmd run typecheck
 npm.cmd test
 npm.cmd run build
+npm.cmd audit
 ```
 
-On platforms without `npm.cmd`, use `npm`. `npm test` compiles `.test-dist` and runs unit, localhost transport, independent stdio, and configuration-export tests. Its runner selects outputs corresponding to current test sources, excluding stale outputs from deleted or renamed tests. It does not require Godot unless optional workflow environment variables are set. The four live workflows below are skipped by default; a successful default run therefore leaves those workflows unverified.
+On platforms without `npm.cmd`, use `npm`. `npm test` compiles `.test-dist` and runs unit, localhost transport, independent stdio, and configuration-export tests. Its runner selects outputs corresponding to current test sources, excluding stale outputs from deleted or renamed tests. It does not require Godot unless optional workflow environment variables are set. The five live workflows below are skipped by default; a successful default run therefore leaves those workflows unverified.
+
+For 0.2.0, the recorded default run passed 80 tests with 5 live workflows skipped
+(85 total). The lockfile uses MCP SDK 1.32.1; the selected Windows release runtime
+is Node.js 22.23.1. The current audit reports 0 vulnerabilities. These results
+are separate from the native/live checks and final package evidence in the status document.
+
+Transport tests split multibyte UTF-8 across response chunks and reset decoder
+state on reconnect. Unit and independent SDK fixtures check cancellation during
+discovery and polling, one cancelled caller alongside a surviving discovery
+caller, pending RPC cleanup, late responses, and operation deadlines shorter
+than the configured RPC timeout. Runtime waiter checks cover stable request IDs,
+arbitrary call arguments, and failed acknowledgments of completed results.
 
 The default suite also checks shared client setup for Codex, OpenCode V1/V2,
 Hermes, Antigravity, Claude Code, and Claude Desktop using isolated files. It
@@ -22,6 +35,10 @@ environment and scope paths, disabled registrations, repeated setup, removal,
 backups, concurrent edits, and CLI subprocesses. Doctor tests initialize the real
 bridge against offline and fixture editor endpoints and verify bounded process
 termination. They do not install into the user's agent profiles.
+Discovery fixtures cover both portable markers, matching portable/source
+registries, global fallback, and explicit pin/working-directory precedence.
+Doctor CLI fixtures distinguish startup failures (exit 1) from a healthy bridge
+with no editor (exit 2).
 
 ## Native editor build and tests
 
@@ -29,11 +46,23 @@ Godot-side tests in `tests/editor/godot_mcp/` are included when building with `t
 
 ```powershell
 $env:PYTHONPATH = (Resolve-Path "../scons").Path
-python -m SCons platform=windows target=editor tests=yes extra_suffix=mcp_latest_verify werror=yes debug_symbols=no accesskit=no angle=no -j12
-./bin/godot.windows.editor.x86_64.mcp_latest_verify.console.exe --headless --test --test-case="*[GodotMCP]*"
+python -m SCons platform=windows target=editor tests=yes extra_suffix=mcp_latest_verify werror=yes debug_symbols=no accesskit=no angle=no -j12 bin/godot.windows.editor.x86_64.mcp_latest_verify.exe
+$mcpTestLog = Join-Path ([System.IO.Path]::GetTempPath()) ("godot-mcp-native-" + [guid]::NewGuid().ToString())
+$mcpTestProcess = Start-Process -FilePath (Resolve-Path "./bin/godot.windows.editor.x86_64.mcp_latest_verify.exe") -ArgumentList @("--headless", "--test", "--test-case=*[GodotMCP]*") -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$mcpTestLog.stdout.log" -RedirectStandardError "$mcpTestLog.stderr.log"
+Get-Content -LiteralPath "$mcpTestLog.stdout.log", "$mcpTestLog.stderr.log"
+if ($mcpTestProcess.ExitCode -ne 0) { throw "Native MCP tests failed: $($mcpTestProcess.ExitCode)" }
 ```
 
-The suffix creates a separate verification binary so an unrelated running editor need not be replaced. Other platforms require their corresponding build options and binary name.
+The explicit executable target creates a separate verification binary and avoids
+the default targets which copy optional DLLs beside a possibly running editor.
+It does not build a console companion. Native test fixtures resolve relative to
+the executable at `../tests/data`, so a copied executable needs that fixture
+layout too. A disposable installation can copy the executable into `bin/`, place
+`_sc_` beside it to isolate settings, and copy `tests/data/godot_mcp/` to the same
+relative location. Node `execFile` also supports hidden execution and captured
+output. Run the core UndoRedo regressions separately with
+`--test-case=*[UndoRedo]*`. Other platforms require their corresponding build
+options and binary name.
 
 ## Live runtime workflow
 
@@ -46,7 +75,7 @@ $env:GODOT_MCP_INTEGRATION_PROJECT = "C:\absolute\path\to\disposable-test-projec
 node --test .test-dist/test/editor_integration.test.js
 ```
 
-The test validates disk and supplied invalid GDScript, creates/scans/imports an SVG, reloads a changed disk script, reads partial settings, starts two game runs, inspects and writes runtime properties, calls a method, checks paused physics/process stepping and held input, resumes, captures a viewport, and checks run-filtered diagnostics. It refuses to overwrite an existing fixture directory. An `after` hook stops its owned run, removes its fixture and captured PNG, scans the filesystem, and closes the bridge connection.
+The test validates disk and supplied invalid GDScript, creates/scans/imports an SVG, reloads a changed disk script, reads partial settings, starts two game runs, inspects and writes runtime properties, calls a method, checks paused physics/process stepping and held input, resumes, checks a mouse press/drag/release sequence with event masks and global positions, captures a viewport, and checks run-filtered diagnostics. It refuses to overwrite an existing fixture directory. An `after` hook stops its owned run, removes its fixture and captured PNG, scans the filesystem, and closes the bridge connection.
 
 ## Live scene-patch workflow
 
@@ -63,7 +92,7 @@ It exercises root rename dry runs/commits, subtree move/save, JSON integer posit
 
 ## Isolated editor setup workflow
 
-On Windows, this workflow makes a temporary self-contained bundle and project using the selected rebuilt executable, current Node executable, and bridge build/dependencies. It launches its own headless editor and inspects Editor Settings controls through an editor plugin:
+On Windows, this workflow makes a temporary self-contained bundle and project using the selected rebuilt executable, current Node executable, current-source bridge outputs, and runtime files from locked production dependencies. It omits development tools, declarations, and source maps and bounds parallel file copies. It launches its own headless editor and inspects Editor Settings controls through an editor plugin:
 
 ```powershell
 npm.cmd run build
@@ -72,7 +101,7 @@ $env:GODOT_MCP_SETUP_EDITOR = "C:\absolute\path\to\rebuilt\Godot.exe"
 node --test .test-dist/test/editor_setup_integration.test.js
 ```
 
-It checks the Godot MCP category/search with localization on/off, config-button export, enabled session, repeat export, missing-bridge recovery, moved bundle paths, and source-checkout discovery with Node on PATH. An independent SDK client launches the exported connection and checks tool discovery and the live session handshake. It does not launch a coding agent or install configuration into an agent application. The temporary files are removed after its editor exits.
+It checks the Godot MCP category/search with localization on/off, config-button export, enabled session, repeat export, missing-bridge recovery, moved bundle paths, and source-checkout discovery with Node on PATH. It registers an unpinned portable bridge in a disposable client file and checks discovery from outside the project using the portable registry. An independent SDK client launches the exported connection and checks tool discovery and the live session handshake in all three layouts. It does not launch a coding agent or install configuration into an agent application. Diagnostics identify preparation and launch stages, and cancellation stops the owned editor before temporary files are removed.
 
 ## Isolated release workflow
 
@@ -98,8 +127,31 @@ runs headless. Cleanup stops only owned processes before removing temporary data
 When finished, clear optional flags before running the default suite:
 
 ```powershell
-Remove-Item Env:GODOT_MCP_INTEGRATION, Env:GODOT_MCP_SCENE_PATCH_INTEGRATION, Env:GODOT_MCP_INTEGRATION_PROJECT, Env:GODOT_MCP_SETUP_EDITOR, Env:GODOT_MCP_RELEASE_EDITOR, Env:GODOT_MCP_RELEASE_BUNDLE -ErrorAction SilentlyContinue
+Remove-Item Env:GODOT_MCP_INTEGRATION, Env:GODOT_MCP_SCENE_PATCH_INTEGRATION, Env:GODOT_MCP_INTEGRATION_PROJECT, Env:GODOT_MCP_SETUP_EDITOR, Env:GODOT_MCP_RELEASE_EDITOR, Env:GODOT_MCP_RELEASE_BUNDLE, Env:GODOT_MCP_PROTOCOL_EDITOR -ErrorAction SilentlyContinue
 ```
+
+## Isolated native protocol regressions
+
+This workflow copies the selected rebuilt editor into a temporary self-contained
+installation and runs actual endpoint requests. It verifies scene containment,
+reparent/delete/batch-delete ownership across undo/redo and save/reload, retained
+resource creation and its capacity/conflict guards, canonical resource paths,
+split UTF-8 requests, the request byte limit, and all four GDScript LSP operations.
+Reference assertions exclude comments, strings, multiline text, and longer
+Unicode identifiers and cover declaration filtering, including a declaration
+on the first source line. These are lexical matches with `approximate: true`,
+not a semantic reference index; callers must also inspect `truncated`.
+
+```powershell
+npm.cmd run build:test
+$env:GODOT_MCP_PROTOCOL_EDITOR = "C:\absolute\path\to\rebuilt\Godot.exe"
+node --test .test-dist/test/native_protocol_integration.test.js
+```
+
+Clear `GODOT_MCP_PROTOCOL_EDITOR` before the default suite. Like the other live
+workflows, this check requires localhost connections and atomic file replacement
+in its disposable directories. Sandboxes which deny either must run it with the
+required access; permission failures do not establish a product regression.
 
 ## Windows packaging and package verification
 
@@ -109,9 +161,11 @@ refuses to overwrite an existing package. Supply the complete license from the
 selected Node distribution. Run from the bridge directory:
 
 ```powershell
-npm.cmd run package:windows -- --editor "C:\absolute\path\to\rebuilt\Godot.exe" --output "C:\absolute\path\to\checkout\artifacts\new-release" --node-license "C:\absolute\path\to\Node\LICENSE"
-node scripts/verify-package.mjs --package "C:\absolute\path\to\checkout\artifacts\new-release" --check-source
-$env:GODOT_MCP_RELEASE_BUNDLE = "C:\absolute\path\to\checkout\artifacts\new-release"
+$mcpReleaseDirectory = [System.IO.Path]::GetFullPath("../../artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007")
+$mcpReleaseEditor = [System.IO.Path]::GetFullPath("../../bin/godot.windows.editor.x86_64.mcp_latest_verify.exe")
+npm.cmd run package:windows -- --editor "$mcpReleaseEditor" --output "$mcpReleaseDirectory" --node-license "C:\absolute\path\to\Node\LICENSE"
+node scripts/verify-package.mjs --package "$mcpReleaseDirectory" --check-source
+$env:GODOT_MCP_RELEASE_BUNDLE = $mcpReleaseDirectory
 node --test .test-dist/test/release_editor_integration.test.js
 ```
 
@@ -123,20 +177,29 @@ the actual launcher with quoted paths, setup/doctor against a disposable client
 file, an independent SDK client, scene mutation/save, saved state across an editor
 restart, reconnecting the same bridge, and exporting/connecting after moving a
 temporary copy. Packaging currently supports Windows x86_64.
+Every current bridge source module contributes its compiled JavaScript file,
+including `request_control.js`; stale dist files are excluded. Source hashes
+include bridge source, tests, and packaging scripts. `--allow-dirty` is reserved
+for a recorded tooling probe and cannot satisfy the clean source release gate.
 
 ## Coverage and limits
 
 | Area | Available coverage | Limit |
 | --- | --- | --- |
 | MCP initialization and tool calls | Independent stdio clients; protocol versions `2024-11-05`, `2025-03-26`, `2025-06-18`, and `2025-11-25`; generic CLI export | Protocol tests do not demonstrate integration with every client application. |
-| Discovery and reconnect | Session parsing/discovery tests, replacement localhost endpoint, stale handshakes, safe/unsafe replay, bounded timeout/backoff | Replacement endpoints simulate editors; actual editor setup is a separate workflow. |
-| Runtime and filesystem polling | Bridge waiter tests for deduplication, completion, errors, and timeouts | Mocked transport coverage does not replace the live runtime workflow. |
+| Discovery and reconnect | Session parsing, matching portable/source registries, explicit pins/cwd, replacement localhost endpoint, stale handshakes, safe/unsafe replay, bounded timeout/backoff | Replacement endpoints simulate editors; real unpinned portable registration is checked separately. |
+| Cancellation and deadlines | Unit and actual SDK fixtures cover cancelled discovery/polling, a surviving concurrent caller, pending RPC cleanup, late replies, and deadlines covering backoff/RPC/acknowledgments | Cancellation/timeout stops waiting; an operation already sent may still complete. |
+| Runtime and filesystem polling | Bridge waiter tests for stable deduplication IDs, completion, errors, arbitrary runtime call arguments, and acknowledgment failure | Completed results survive acknowledgment failure; no acknowledgment is sent for uncertain timeout/cancellation. Live runtime behavior is a separate workflow. |
+| UTF-8 and request framing | Bridge response-fragment/reconnect tests plus native protocol requests split inside three/four-byte characters and an oversized multibyte request | The editor limit is 1 MiB per request in bytes. Native endpoint checks are gated live tests. |
 | Unsaved editor buffers | Native buffer-conflict predicate and isolated release workflow with a real open unsaved script tab and scene | The release workflow is gated; the default suite does not execute it. |
-| Validation, imports, reload, input, capture | Native validation tests, live runtime workflow, and isolated real-buffer checks | A skipped workflow establishes no execution evidence. |
-| Scene patches | Native scene-patch tests plus the separate live patch fixture | Covers global properties, ordered script assignments, best-effort isolation, apply/undo/redo, persistence, and reload. Selected cases do not exhaust every mutation ordering or custom setter. |
+| Validation, imports, reload, input, capture | Native validation tests, live runtime workflow, real-buffer checks, and mouse press/drag/release assertions for event masks/global positions | A skipped workflow establishes no execution evidence; mouse tests do not exhaust every window/input-routing combination. |
+| Scene containment and owners | Native protocol workflow checks edited-scene containment, normalized/duplicate batch targets, subtree reparent/delete undo/redo, and save/reload packing | Runtime tree access has its separate run/root contract. These checks require the real rebuilt editor. |
+| Scene patches | Native tests plus the live patch fixture cover global properties, ordered scripts, best-effort isolation, and internal front/back children during insert/move/undo | Public sibling positions exclude internal children. Selected cases do not exhaust every mutation ordering or custom setter. |
+| Created resources | Native protocol checks pending lifetime, access/mutation/save, canonical paths, retargeting rejection, capacity release, and external-file conflicts | At most 128 pending resources are retained per editor MCP session; save before ending the session. |
+| GDScript queries | Native protocol checks definitions, hover, document symbols, tokenized reference locations, and declaration exclusion | References are approximate lexical matches; workspace search is bounded to 300 files and 5,000 locations, with source-size/truncation limits. |
 | Diagnostics | Native store isolation tests and two-run live assertions requiring each intentional runtime marker | This covers run isolation and marker delivery rather than every possible runtime error. |
 | Packaging/setup | Isolated settings export, package hashes/source identity, actual SDK mutation/save, real restart/reconnect, moved bundle, and isolated release workflow | Only the exact tested payload is covered; existing release archives are not refreshed implicitly. |
-| Shared client setup | All six target schemas/scopes, preservation and conflict fixtures, CLI setup/removal, storage backups, real bridge diagnostics, and packaged launcher | Independent diagnostics and file registration do not establish tool visibility in every running agent application. |
+| Shared client setup | All six schemas/scopes, preservation/conflict fixtures, CLI setup/removal, storage backups, doctor exit codes, real bridge diagnostics, and packaged launcher | Independent diagnostics and file registration do not establish tool visibility in every running agent application. |
 
 ## Test hygiene
 

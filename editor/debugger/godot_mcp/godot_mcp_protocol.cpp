@@ -40,6 +40,7 @@
 #include "core/io/resource_saver.h"
 #include "core/io/resource_uid.h"
 #include "core/object/class_db.h"
+#include "core/object/editor_language.h"
 #include "core/object/script_language.h"
 #include "core/object/undo_redo.h"
 #include "core/os/keyboard.h"
@@ -57,8 +58,11 @@
 #include "editor/script/script_editor_base.h"
 #include "editor/script/script_editor_plugin.h"
 #include "editor/settings/project_settings_editor.h"
+
+#include "modules/modules_enabled.gen.h"
 #ifdef MODULE_GDSCRIPT_ENABLED
 #include "modules/gdscript/gdscript.h"
+#include "modules/gdscript/gdscript_tokenizer.h"
 #include "modules/gdscript/language_server/gdscript_extend_parser.h"
 #endif
 #include "scene/3d/node_3d.h"
@@ -87,96 +91,121 @@ static String _get_scene_version(Node *p_root, int p_history_id) {
 	return undo_redo ? GodotMCPScenePatch::compute_scene_version(p_root, p_history_id, undo_redo->get_version()) : String();
 }
 
+struct SubtreeOwner {
+	Node *node = nullptr;
+	Node *owner = nullptr;
+};
+
+static void _capture_subtree_owners(Node *p_node, Vector<SubtreeOwner> &r_owners) {
+	r_owners.push_back({ p_node, p_node->get_owner() });
+	for (int i = 0; i < p_node->get_child_count(true); i++) {
+		_capture_subtree_owners(p_node->get_child(i, true), r_owners);
+	}
+}
+
+static void _add_subtree_owner_undo(EditorUndoRedoManager *p_undo_redo, const Vector<SubtreeOwner> &p_owners) {
+	for (const SubtreeOwner &entry : p_owners) {
+		p_undo_redo->add_undo_method(entry.node, "set_owner", entry.owner);
+	}
+}
+
+static bool _is_canonical_resource_path(const String &p_path) {
+	return p_path.begins_with("res://") && p_path.simplify_path() == p_path &&
+			!p_path.trim_prefix("res://").split("/").has("..") && !p_path.get_file().is_empty();
+}
+
 #ifdef MODULE_GDSCRIPT_ENABLED
-static bool _is_identifier_char(char32_t p_char) {
-	return p_char == '_' || (p_char >= '0' && p_char <= '9') || (p_char >= 'A' && p_char <= 'Z') || (p_char >= 'a' && p_char <= 'z');
-}
+static constexpr int MAX_REFERENCE_LOCATIONS = 5000;
+static constexpr int MAX_REFERENCE_SOURCE_CHARS = 1024 * 1024;
 
-static void _index_to_line_col(const String &p_text, int p_index, int &r_line, int &r_col) {
-	r_line = 0;
-	r_col = 0;
-	if (p_index <= 0) {
+static void _append_identifier_occurrences(const String &p_source, const String &p_identifier, const String &p_script_path,
+		Array &r_locations, bool &r_truncated) {
+	if (p_source.length() > MAX_REFERENCE_SOURCE_CHARS) {
+		r_truncated = true;
 		return;
 	}
-
-	const int text_length = p_text.length();
-	const int end = p_index < text_length ? p_index : text_length;
-	for (int i = 0; i < end; i++) {
-		if (p_text[i] == '\n') {
-			r_line++;
-			r_col = 0;
-		} else {
-			r_col++;
-		}
-	}
-}
-
-static void _append_identifier_occurrences(const String &p_source, const String &p_identifier, const String &p_script_path, Array &r_locations) {
-	if (p_identifier.is_empty()) {
-		return;
-	}
-
-	int search_from = 0;
+	// Use the language tokenizer so comments, quoted text, multiline strings
+	// and Unicode identifier boundaries have exactly the language's behavior.
+	GDScriptTokenizerText tokenizer;
+	tokenizer.set_source_code(p_source);
 	while (true) {
-		const int match_index = p_source.find(p_identifier, search_from);
-		if (match_index < 0) {
+		const GDScriptTokenizer::Token token = tokenizer.scan();
+		if (token.type == GDScriptTokenizer::Token::ERROR) {
+			r_truncated = true;
 			break;
 		}
-
-		const int before_index = match_index - 1;
-		const int after_index = match_index + p_identifier.length();
-		const bool has_valid_before = before_index < 0 || !_is_identifier_char(p_source[before_index]);
-		const bool has_valid_after = after_index >= p_source.length() || !_is_identifier_char(p_source[after_index]);
-		if (has_valid_before && has_valid_after) {
-			int start_line = 0;
-			int start_col = 0;
-			int end_line = 0;
-			int end_col = 0;
-			_index_to_line_col(p_source, match_index, start_line, start_col);
-			_index_to_line_col(p_source, after_index, end_line, end_col);
-
-			Dictionary location;
-			location["filePath"] = p_script_path;
-			location["line"] = start_line;
-			location["character"] = start_col;
-			location["end_line"] = end_line;
-			location["end_character"] = end_col;
-			r_locations.push_back(location);
+		if (token.type == GDScriptTokenizer::Token::TK_EOF) {
+			break;
 		}
-
-		search_from = match_index + p_identifier.length();
+		if (token.type != GDScriptTokenizer::Token::IDENTIFIER || String(token.get_identifier()) != p_identifier) {
+			continue;
+		}
+		if (r_locations.size() >= MAX_REFERENCE_LOCATIONS) {
+			r_truncated = true;
+			break;
+		}
+		Dictionary location;
+		location["filePath"] = p_script_path;
+		location["line"] = token.start_line - 1;
+		location["character"] = token.start_column - 1;
+		location["end_line"] = token.end_line - 1;
+		location["end_character"] = token.end_column - 1;
+		r_locations.push_back(location);
 	}
 }
 
-static String _lookup_result_type_to_string(ScriptLanguage::LookupResultType p_type) {
+static String _lookup_result_type_to_string(EditorLanguage::LookupResult::Type p_type) {
 	switch (p_type) {
-		case ScriptLanguage::LOOKUP_RESULT_SCRIPT_LOCATION:
+		case EditorLanguage::LookupResult::Type::SCRIPT_LOCATION:
 			return "script_location";
-		case ScriptLanguage::LOOKUP_RESULT_CLASS:
+		case EditorLanguage::LookupResult::Type::CLASS:
 			return "class";
-		case ScriptLanguage::LOOKUP_RESULT_CLASS_CONSTANT:
+		case EditorLanguage::LookupResult::Type::CLASS_CONSTANT:
 			return "class_constant";
-		case ScriptLanguage::LOOKUP_RESULT_CLASS_PROPERTY:
+		case EditorLanguage::LookupResult::Type::CLASS_PROPERTY:
 			return "class_property";
-		case ScriptLanguage::LOOKUP_RESULT_CLASS_METHOD:
+		case EditorLanguage::LookupResult::Type::CLASS_METHOD:
 			return "class_method";
-		case ScriptLanguage::LOOKUP_RESULT_CLASS_SIGNAL:
+		case EditorLanguage::LookupResult::Type::CLASS_SIGNAL:
 			return "class_signal";
-		case ScriptLanguage::LOOKUP_RESULT_CLASS_ENUM:
+		case EditorLanguage::LookupResult::Type::CLASS_ENUM:
 			return "class_enum";
-		case ScriptLanguage::LOOKUP_RESULT_CLASS_TBD_GLOBALSCOPE:
-			return "class_global";
-		case ScriptLanguage::LOOKUP_RESULT_CLASS_ANNOTATION:
+		case EditorLanguage::LookupResult::Type::CLASS_ANNOTATION:
 			return "class_annotation";
-		case ScriptLanguage::LOOKUP_RESULT_LOCAL_CONSTANT:
+		case EditorLanguage::LookupResult::Type::LOCAL_CONSTANT:
 			return "local_constant";
-		case ScriptLanguage::LOOKUP_RESULT_LOCAL_VARIABLE:
+		case EditorLanguage::LookupResult::Type::LOCAL_VARIABLE:
 			return "local_variable";
-		case ScriptLanguage::LOOKUP_RESULT_MAX:
+		default:
 			return "unknown";
 	}
 
 	return "unknown";
+}
+
+static int _declaration_character(const ExtendGDScriptParser &p_parser, const String &p_source,
+		const String &p_identifier, int p_line) {
+	const LSP::DocumentSymbol *symbol = p_parser.get_symbol_defined_at_line(p_line, p_identifier);
+	if (symbol && symbol->name == p_identifier && symbol->selectionRange.start.line == p_line) {
+		return symbol->selectionRange.start.character;
+	}
+	// The extended parser returns the class symbol for line zero, including
+	// implicit-base scripts whose first line declares a member. Fall back only
+	// when the resolved declaration line has one unambiguous identifier token.
+	Array matches;
+	bool truncated = false;
+	_append_identifier_occurrences(p_source, p_identifier, String(), matches, truncated);
+	int character = -1;
+	for (int i = 0; i < matches.size(); i++) {
+		const Dictionary match = matches[i];
+		if (int(match["line"]) == p_line) {
+			if (character >= 0) {
+				return -1;
+			}
+			character = match["character"];
+		}
+	}
+	return truncated ? -1 : character;
 }
 #endif
 
@@ -1239,6 +1268,7 @@ Error GodotMCPProtocol::start(int p_requested_port, const Dictionary &p_capabili
 	runtime_controller.initialize(&diagnostics_store);
 	viewport_capture.set_runtime_controller(&runtime_controller);
 	clients.clear();
+	created_resources.clear();
 	started = true;
 
 	error_handler.errfunc = _error_handler_callback;
@@ -1273,6 +1303,7 @@ void GodotMCPProtocol::stop() {
 	filesystem_sync.set_session_id(String());
 	session_id.clear();
 	capabilities.clear();
+	created_resources.clear();
 	started = false;
 	diagnostics_store.clear();
 }
@@ -1308,7 +1339,9 @@ void GodotMCPProtocol::poll() {
 			continue;
 		}
 
-		int available_bytes = client.peer->get_available_bytes();
+		// Never decode individual TCP fragments: a fragment can end in the
+		// middle of a UTF-8 code point. Bound reads and incomplete lines in bytes.
+		int available_bytes = MIN(client.peer->get_available_bytes(), 64 * 1024);
 		if (available_bytes > 0) {
 			Vector<uint8_t> data;
 			data.resize(available_bytes);
@@ -1320,23 +1353,27 @@ void GodotMCPProtocol::poll() {
 			}
 
 			if (received > 0) {
-				client.read_buffer += String::utf8((const char *)data.ptr(), received);
+				const int previous_size = client.read_buffer.size();
+				client.read_buffer.resize(previous_size + received);
+				memcpy(client.read_buffer.ptrw() + previous_size, data.ptr(), received);
 			}
-		}
-
-		if (client.read_buffer.length() > MAX_REQUEST_BYTES) {
-			clients.remove_at(i);
-			continue;
 		}
 
 		while (true) {
-			int eol = client.read_buffer.find_char('\n');
+			const int eol = client.read_buffer.find('\n');
 			if (eol < 0) {
+				if (client.read_buffer.size() > MAX_REQUEST_BYTES) {
+					clients.remove_at(i);
+				}
+				break;
+			}
+			if (eol > MAX_REQUEST_BYTES) {
+				clients.remove_at(i);
 				break;
 			}
 
-			String line = client.read_buffer.substr(0, eol).strip_edges();
-			client.read_buffer = client.read_buffer.substr(eol + 1, client.read_buffer.length() - eol - 1);
+			String line = String::utf8((const char *)client.read_buffer.ptr(), eol).strip_edges();
+			client.read_buffer = client.read_buffer.slice(eol + 1);
 			if (line.is_empty()) {
 				continue;
 			}
@@ -1850,7 +1887,8 @@ Node *GodotMCPProtocol::_resolve_node_path(const String &p_node_path, Node *p_ro
 		return p_root;
 	}
 
-	return p_root->get_node_or_null(NodePath(p_node_path));
+	Node *target = p_root->get_node_or_null(NodePath(p_node_path));
+	return target && (target == p_root || p_root->is_ancestor_of(target)) ? target : nullptr;
 }
 
 Ref<Script> GodotMCPProtocol::_find_script_in_tree(Node *p_root, const String &p_script_path) const {
@@ -3577,12 +3615,14 @@ Dictionary GodotMCPProtocol::_method_node_delete_batch(const Dictionary &p_param
 		Node *parent = nullptr;
 		int old_index = -1;
 		int depth = 0;
+		Vector<SubtreeOwner> owners;
 	};
 
 	Array results;
 	results.resize(items.size());
 	Vector<DeleteBatchOp> operations;
 	HashMap<String, bool> seen_paths;
+	HashSet<ObjectID> seen_nodes;
 
 	int failure_count = 0;
 	int skipped_count = 0;
@@ -3666,6 +3706,16 @@ Dictionary GodotMCPProtocol::_method_node_delete_batch(const Dictionary &p_param
 			}
 			continue;
 		}
+		if (seen_nodes.has(node->get_instance_id())) {
+			results[i] = _make_batch_item_error(i, item_id, ERROR_INVALID_ARGUMENT, "INVALID_ARGUMENT: multiple node paths resolve to the same deletion target.");
+			failure_count++;
+			if (mode == BATCH_MODE_ATOMIC) {
+				atomic_failed = true;
+				atomic_failure_message = "CONFLICT: atomic delete_batch aborted after duplicate target validation.";
+			}
+			continue;
+		}
+		seen_nodes.insert(node->get_instance_id());
 
 		Node *parent = node->get_parent();
 		if (!parent) {
@@ -3692,6 +3742,7 @@ Dictionary GodotMCPProtocol::_method_node_delete_batch(const Dictionary &p_param
 		op.parent = parent;
 		op.old_index = node->get_index(false);
 		op.depth = depth;
+		_capture_subtree_owners(node, op.owners);
 		operations.push_back(op);
 	}
 
@@ -3734,9 +3785,25 @@ Dictionary GodotMCPProtocol::_method_node_delete_batch(const Dictionary &p_param
 
 		for (const DeleteBatchOp &op : sorted_operations) {
 			undo_redo->add_do_method(op.parent, "remove_child", op.node);
-			undo_redo->add_undo_method(op.parent, "add_child", op.node, true);
-			undo_redo->add_undo_method(op.parent, "move_child", op.node, op.old_index);
 			undo_redo->add_undo_reference(op.node);
+		}
+		// Restore ancestors first, then descendants. Ownership is valid only
+		// after the complete original parent chain has been reattached.
+		for (int i = sorted_operations.size() - 1; i >= 0; i--) {
+			const DeleteBatchOp &op = sorted_operations[i];
+			undo_redo->add_undo_method(op.parent, "add_child", op.node, true);
+		}
+		Vector<DeleteBatchOp> restore_operations = sorted_operations;
+		for (int i = 0; i < restore_operations.size(); i++) {
+			for (int j = i + 1; j < restore_operations.size(); j++) {
+				if (restore_operations[j].old_index < restore_operations[i].old_index) {
+					SWAP(restore_operations.write[i], restore_operations.write[j]);
+				}
+			}
+		}
+		for (const DeleteBatchOp &op : restore_operations) {
+			undo_redo->add_undo_method(op.parent, "move_child", op.node, op.old_index);
+			_add_subtree_owner_undo(undo_redo, op.owners);
 		}
 
 		undo_redo->commit_action();
@@ -3809,9 +3876,12 @@ Dictionary GodotMCPProtocol::_method_node_delete(const Dictionary &p_params, int
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	EditorData &editor_data = EditorNode::get_editor_data();
 	undo_redo->create_action_for_history("Godot MCP: Delete Node", editor_data.get_current_edited_scene_history_id());
+	Vector<SubtreeOwner> owners;
+	_capture_subtree_owners(node, owners);
 	undo_redo->add_do_method(parent, "remove_child", node);
 	undo_redo->add_undo_method(parent, "add_child", node, true);
 	undo_redo->add_undo_method(parent, "move_child", node, old_index);
+	_add_subtree_owner_undo(undo_redo, owners);
 	undo_redo->add_undo_reference(node);
 	undo_redo->commit_action();
 
@@ -3863,7 +3933,8 @@ Dictionary GodotMCPProtocol::_method_node_reparent(const Dictionary &p_params, i
 
 	const int old_index = node->get_index(false);
 	const String old_name = node->get_name();
-	Node *old_owner = node->get_owner();
+	Vector<SubtreeOwner> owners;
+	_capture_subtree_owners(node, owners);
 
 	if (new_name.is_empty()) {
 		new_name = old_name;
@@ -3872,20 +3943,27 @@ Dictionary GodotMCPProtocol::_method_node_reparent(const Dictionary &p_params, i
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	EditorData &editor_data = EditorNode::get_editor_data();
 	undo_redo->create_action_for_history("Godot MCP: Reparent Node", editor_data.get_current_edited_scene_history_id());
+	undo_redo->add_do_method(node, "set_owner", Variant());
 	undo_redo->add_do_method(old_parent, "remove_child", node);
+	undo_redo->add_do_method(node, "set_name", new_name);
 	undo_redo->add_do_method(new_parent, "add_child", node, true);
 	if (position >= 0) {
 		undo_redo->add_do_method(new_parent, "move_child", node, position);
 	}
-	if (new_name != old_name) {
-		undo_redo->add_do_method(node, "set_name", new_name);
-		undo_redo->add_undo_method(node, "set_name", old_name);
+	for (const SubtreeOwner &entry : owners) {
+		Node *owner = entry.owner;
+		const bool remains_ancestor = owner && (owner == node || node->is_ancestor_of(owner) || owner == new_parent || owner->is_ancestor_of(new_parent));
+		if ((owner && !remains_ancestor) || (!owner && entry.node == node)) {
+			owner = root;
+		}
+		undo_redo->add_do_method(entry.node, "set_owner", owner);
 	}
-	undo_redo->add_do_method(node, "set_owner", root);
-	undo_redo->add_undo_method(node, "set_owner", old_owner);
+	undo_redo->add_undo_method(node, "set_owner", Variant());
 	undo_redo->add_undo_method(new_parent, "remove_child", node);
+	undo_redo->add_undo_method(node, "set_name", old_name);
 	undo_redo->add_undo_method(old_parent, "add_child", node, true);
 	undo_redo->add_undo_method(old_parent, "move_child", node, old_index);
+	_add_subtree_owner_undo(undo_redo, owners);
 	undo_redo->commit_action();
 
 	Dictionary data;
@@ -4865,6 +4943,11 @@ Dictionary GodotMCPProtocol::_method_lsp_query(const Dictionary &p_params, int &
 		return Dictionary();
 	}
 
+	if (source.length() > MAX_REFERENCE_SOURCE_CHARS) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: script source exceeds the LSP query limit of 1 Mi characters.";
+		return Dictionary();
+	}
 	ExtendGDScriptParser parser;
 	parser.parse(source, script_path);
 	if (parser.parse_result != OK) {
@@ -4897,7 +4980,7 @@ Dictionary GodotMCPProtocol::_method_lsp_query(const Dictionary &p_params, int &
 	position.character = character;
 
 	LSP::Range identifier_range;
-	const String identifier = parser.get_identifier_under_position(position, identifier_range);
+	const String identifier = parser.get_symbol_name_under_position(position, identifier_range);
 	if (identifier.is_empty()) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: no identifier found at the provided position.";
@@ -4908,13 +4991,16 @@ Dictionary GodotMCPProtocol::_method_lsp_query(const Dictionary &p_params, int &
 		const bool include_declaration = bool(p_params.get("include_declaration", true));
 		const bool workspace_search = bool(p_params.get("workspace_search", false));
 		const String search_root = String(p_params.get("search_root", "res://"));
-		int file_limit = (int)p_params.get("file_limit", 300);
-		if (file_limit < 1) {
-			file_limit = 1;
+		const int file_limit = CLAMP((int)p_params.get("file_limit", 300), 1, 300);
+		if (workspace_search && (!search_root.begins_with("res://") || search_root.simplify_path() != search_root || search_root.trim_prefix("res://").split("/").has(".."))) {
+			r_error_code = ERROR_INVALID_ARGUMENT;
+			r_error_message = "INVALID_ARGUMENT: search_root must be a canonical directory within res://.";
+			return Dictionary();
 		}
 
 		Array locations;
-		_append_identifier_occurrences(source, identifier, script_path, locations);
+		bool references_truncated = false;
+		_append_identifier_occurrences(source, identifier, script_path, locations, references_truncated);
 
 		if (workspace_search && search_root.begins_with("res://")) {
 			Vector<String> extensions;
@@ -4923,6 +5009,7 @@ Dictionary GodotMCPProtocol::_method_lsp_query(const Dictionary &p_params, int &
 			Vector<String> script_files;
 			bool truncated = false;
 			_collect_files_recursive(search_root, extensions, true, file_limit, script_files, truncated);
+			references_truncated |= truncated;
 			for (int i = 0; i < script_files.size(); i++) {
 				const String &candidate_path = script_files[i];
 				if (candidate_path == script_path) {
@@ -4932,17 +5019,48 @@ Dictionary GodotMCPProtocol::_method_lsp_query(const Dictionary &p_params, int &
 				if (file.is_null()) {
 					continue;
 				}
-				_append_identifier_occurrences(file->get_as_utf8_string(), identifier, candidate_path, locations);
+				if (file->get_length() > MAX_REFERENCE_SOURCE_CHARS || locations.size() >= MAX_REFERENCE_LOCATIONS) {
+					references_truncated = true;
+					continue;
+				}
+				_append_identifier_occurrences(file->get_as_utf8_string(), identifier, candidate_path, locations, references_truncated);
 			}
 		}
 
 		if (!include_declaration) {
+			GDScriptLanguage *language = GDScriptLanguage::get_singleton();
+			EditorLanguage *editor_language = language ? language->get_editor_language() : nullptr;
+			EditorLanguage::LookupResult declaration;
+			LSP::Position lookup_position = position;
+			lookup_position.character = identifier_range.end.character;
+			if (!editor_language || editor_language->lookup_code(parser.get_text_for_lookup_symbol(lookup_position, identifier), identifier, script_path, nullptr, declaration) != OK || declaration.location < 1) {
+				r_error_code = ERROR_NOT_FOUND;
+				r_error_message = "NOT_FOUND: cannot exclude the declaration because this symbol's declaration could not be resolved.";
+				return Dictionary();
+			}
+			const String declaration_path = declaration.script_path.is_empty() ? script_path : declaration.script_path;
+			const int declaration_line = declaration.location - 1;
+			int declaration_character = -1;
+			if (declaration_path == script_path) {
+				declaration_character = _declaration_character(parser, source, identifier, declaration_line);
+			} else {
+				Ref<FileAccess> declaration_file = FileAccess::open(declaration_path, FileAccess::READ);
+				if (declaration_file.is_valid() && declaration_file->get_length() <= MAX_REFERENCE_SOURCE_CHARS) {
+					ExtendGDScriptParser declaration_parser;
+					const String declaration_source = declaration_file->get_as_utf8_string();
+					declaration_parser.parse(declaration_source, declaration_path);
+					declaration_character = _declaration_character(declaration_parser, declaration_source, identifier, declaration_line);
+				}
+			}
+			if (declaration_character < 0) {
+				r_error_code = ERROR_NOT_FOUND;
+				r_error_message = "NOT_FOUND: declaration position could not be resolved safely.";
+				return Dictionary();
+			}
 			Array filtered_locations;
-			const int declaration_line = identifier_range.start.line;
-			const int declaration_character = identifier_range.start.character;
 			for (int i = 0; i < locations.size(); i++) {
 				Dictionary location = locations[i];
-				if ((int)location.get("line", -1) == declaration_line && (int)location.get("character", -1) == declaration_character && String(location.get("filePath", String())) == script_path) {
+				if ((int)location.get("line", -1) == declaration_line && (int)location.get("character", -1) == declaration_character && String(location.get("filePath", String())) == declaration_path) {
 					continue;
 				}
 				filtered_locations.push_back(location);
@@ -4956,7 +5074,12 @@ Dictionary GodotMCPProtocol::_method_lsp_query(const Dictionary &p_params, int &
 		data["identifier"] = identifier;
 		data["locations"] = locations;
 		data["count"] = locations.size();
-		return _make_ok(data);
+		data["search_kind"] = "identifier_tokens";
+		data["approximate"] = true;
+		data["truncated"] = references_truncated;
+		Array warnings;
+		warnings.push_back("References are a bounded identifier-token search, excluding comments and strings. Same-named symbols in other scopes may be included; results are not semantic reference resolution.");
+		return _make_ok(data, warnings);
 	}
 
 	GDScriptLanguage *gdscript_language = GDScriptLanguage::get_singleton();
@@ -4980,8 +5103,9 @@ Dictionary GodotMCPProtocol::_method_lsp_query(const Dictionary &p_params, int &
 		return Dictionary();
 	}
 
-	ScriptLanguage::LookupResult lookup_result;
-	Error lookup_error = gdscript_language->lookup_code(lookup_source, identifier, script_path, nullptr, lookup_result);
+	EditorLanguage::LookupResult lookup_result;
+	EditorLanguage *editor_language = gdscript_language->get_editor_language();
+	Error lookup_error = editor_language ? editor_language->lookup_code(lookup_source, identifier, script_path, nullptr, lookup_result) : ERR_UNAVAILABLE;
 	if (lookup_error != OK) {
 		r_error_code = ERROR_NOT_FOUND;
 		r_error_message = "NOT_FOUND: symbol lookup failed at the provided position.";
@@ -4989,16 +5113,13 @@ Dictionary GodotMCPProtocol::_method_lsp_query(const Dictionary &p_params, int &
 	}
 
 	String resolved_script_path = lookup_result.script_path;
-	if (resolved_script_path.is_empty() && lookup_result.script.is_valid()) {
-		resolved_script_path = lookup_result.script->get_path();
-	}
 
 	if (normalized_operation == "definition") {
 		Array locations;
 		if (lookup_result.location >= 0) {
 			Dictionary location;
 			location["filePath"] = resolved_script_path.is_empty() ? script_path : resolved_script_path;
-			location["line"] = lookup_result.location;
+			location["line"] = MAX(0, lookup_result.location - 1);
 			location["character"] = 0;
 			locations.push_back(location);
 		}
@@ -5064,9 +5185,9 @@ Dictionary GodotMCPProtocol::_method_resource_save(const Dictionary &p_params, i
 		path = root->get_scene_file_path();
 	}
 
-	if (!path.begins_with("res://")) {
+	if (!_is_canonical_resource_path(path)) {
 		r_error_code = ERROR_INVALID_ARGUMENT;
-		r_error_message = "INVALID_ARGUMENT: path must start with res://";
+		r_error_message = "INVALID_ARGUMENT: resource save requires a canonical res:// file path without traversal.";
 		return Dictionary();
 	}
 
@@ -5123,6 +5244,11 @@ Dictionary GodotMCPProtocol::_method_resource_save(const Dictionary &p_params, i
 			return Dictionary();
 		}
 	} else {
+		if (created_resources.has(path) && FileAccess::exists(path)) {
+			r_error_code = ERROR_CONFLICT;
+			r_error_message = "CONFLICT: a file appeared at the unsaved resource's creation path; it will not be overwritten.";
+			return Dictionary();
+		}
 		Ref<Resource> resource = ResourceCache::get_ref(path);
 		if (resource.is_null()) {
 			resource = ResourceLoader::load(path);
@@ -5159,6 +5285,9 @@ Dictionary GodotMCPProtocol::_method_resource_save(const Dictionary &p_params, i
 		if (ScriptEditor::get_singleton()) {
 			ScriptEditor::get_singleton()->update_script_times();
 		}
+		// Disk is now the owning source. Scene references keep their own strong
+		// refs; resources without a scene reference can be loaded on demand.
+		created_resources.erase(path);
 	}
 
 	Dictionary data;
@@ -5928,9 +6057,9 @@ Dictionary GodotMCPProtocol::_method_resource_get(const Dictionary &p_params, in
 		r_error_message = "INVALID_ARGUMENT: path is required.";
 		return Dictionary();
 	}
-	if (!path.begins_with("res://")) {
+	if (!_is_canonical_resource_path(path)) {
 		r_error_code = ERROR_INVALID_ARGUMENT;
-		r_error_message = "INVALID_ARGUMENT: path must start with res://";
+		r_error_message = "INVALID_ARGUMENT: resource get requires a canonical res:// file path without traversal.";
 		return Dictionary();
 	}
 
@@ -6062,10 +6191,41 @@ Dictionary GodotMCPProtocol::_method_resource_create(const Dictionary &p_params,
 		r_error_message = "INVALID_ARGUMENT: provide either properties or property_entries, not both.";
 		return Dictionary();
 	}
+	if (initial_properties.has("resource_path")) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: resource_path cannot be assigned as a property during creation; use the path parameter.";
+		return Dictionary();
+	}
 
 	if (type_name.is_empty()) {
 		r_error_code = ERROR_INVALID_ARGUMENT;
 		r_error_message = "INVALID_ARGUMENT: type is required.";
+		return Dictionary();
+	}
+	if (created_resources.size() >= MAX_CREATED_RESOURCES) {
+		r_error_code = ERROR_CONFLICT;
+		r_error_message = "CONFLICT: at most " + itos(MAX_CREATED_RESOURCES) + " unsaved MCP resources may be retained; save resources before creating more.";
+		return Dictionary();
+	}
+	if (path.is_empty()) {
+		do {
+			path = "res://mcp_resource_" + session_id.replace("-", "") + "_" + uitos(++created_resource_counter) + ".tres";
+		} while (FileAccess::exists(path) || ResourceCache::has(path));
+	}
+	if (!_is_canonical_resource_path(path) || path.contains("::")) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: resource creation requires a canonical res:// file path, without traversal or embedded-resource suffixes.";
+		return Dictionary();
+	}
+	const String extension = path.get_extension().to_lower();
+	if (extension == "tscn" || extension == "scn") {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: resource.create cannot create scene files; use scene.create for .tscn or .scn paths.";
+		return Dictionary();
+	}
+	if (FileAccess::exists(path) || DirAccess::dir_exists_absolute(path) || ResourceCache::has(path) || created_resources.has(path)) {
+		r_error_code = ERROR_CONFLICT;
+		r_error_message = "CONFLICT: resource creation path already exists or is loaded: " + path;
 		return Dictionary();
 	}
 
@@ -6082,14 +6242,7 @@ Dictionary GodotMCPProtocol::_method_resource_create(const Dictionary &p_params,
 
 	Ref<Resource> ref_resource(resource);
 
-	if (!path.is_empty()) {
-		if (!path.begins_with("res://")) {
-			r_error_code = ERROR_INVALID_ARGUMENT;
-			r_error_message = "INVALID_ARGUMENT: path must start with res://";
-			return Dictionary();
-		}
-		ref_resource->set_path(path);
-	}
+	ref_resource->set_path(path);
 
 	for (const KeyValue<Variant, Variant> &E : initial_properties) {
 		StringName property_name = E.key;
@@ -6115,6 +6268,7 @@ Dictionary GodotMCPProtocol::_method_resource_create(const Dictionary &p_params,
 		ref_resource->set(property_name, coerced_value);
 	}
 
+	created_resources.insert(path, ref_resource);
 	Dictionary data;
 	data["class"] = ref_resource->get_class();
 	data["path"] = ref_resource->get_path();
@@ -6146,14 +6300,19 @@ Dictionary GodotMCPProtocol::_method_resource_set_properties(const Dictionary &p
 		r_error_message = "INVALID_ARGUMENT: path is required.";
 		return Dictionary();
 	}
-	if (!path.begins_with("res://")) {
+	if (!_is_canonical_resource_path(path)) {
 		r_error_code = ERROR_INVALID_ARGUMENT;
-		r_error_message = "INVALID_ARGUMENT: path must start with res://";
+		r_error_message = "INVALID_ARGUMENT: resource mutation requires a canonical res:// file path without traversal.";
 		return Dictionary();
 	}
 	if (properties.is_empty()) {
 		r_error_code = ERROR_INVALID_ARGUMENT;
 		r_error_message = "INVALID_ARGUMENT: properties must be non-empty.";
+		return Dictionary();
+	}
+	if (created_resources.has(path) && properties.has("resource_path")) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: an unsaved MCP resource cannot be retargeted by changing resource_path.";
 		return Dictionary();
 	}
 

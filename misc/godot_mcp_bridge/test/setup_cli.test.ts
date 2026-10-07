@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { CLIENT_IDS, read_client_registration } from "../src/client_config.js";
@@ -94,6 +94,32 @@ test("setup refuses a wrong Godot project and doctor reports a missing registrat
 	await assert.rejects(run(process.execPath, [bridge, "doctor", "--client", "antigravity", "--config", filename, "--json"], { windowsHide: true }), (error: any) => {
 		assert.equal(error.code, 1);
 		assert.match(JSON.parse(error.stdout)[0].error, /No usable/);
+		return true;
+	});
+});
+
+test("doctor distinguishes configured and standalone startup failure from a healthy offline bridge", { timeout: 30_000 }, async (t) => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "Godot doctor exit codes "));
+	t.after(() => fs.rm(directory, { recursive: true, force: true }));
+	const filename = path.join(directory, "mcp_config.json");
+	await fs.writeFile(filename, JSON.stringify({ mcpServers: { godot: { command: path.join(directory, "missing.exe"), args: [] } } }));
+	await assert.rejects(run(process.execPath, [bridge, "doctor", "--client", "antigravity", "--config", filename, "--json", "--timeout-ms", "500"], { windowsHide: true }), (error: any) => {
+		assert.equal(error.code, 1);
+		assert.equal(JSON.parse(error.stdout)[0].bridge.ok, false);
+		return true;
+	});
+	const setup_module = pathToFileURL(fileURLToPath(new URL("../src/setup.js", import.meta.url))).href;
+	const standalone = path.join(directory, "standalone.mjs");
+	await fs.writeFile(standalone, `import { run_setup_cli } from ${JSON.stringify(setup_module)};\nawait run_setup_cli(["doctor", "--json", "--timeout-ms", "1000"], ${JSON.stringify(path.join(directory, "missing-bridge.js"))});\n`);
+	await assert.rejects(run(process.execPath, [standalone], { windowsHide: true }), (error: any) => {
+		assert.equal(error.code, 1);
+		assert.equal(JSON.parse(error.stdout).bridge.ok, false);
+		return true;
+	});
+	await assert.rejects(run(process.execPath, [bridge, "doctor", "--session-file", path.join(directory, "missing-session.json"), "--json"], { windowsHide: true }), (error: any) => {
+		assert.equal(error.code, 2);
+		assert.equal(JSON.parse(error.stdout).bridge.ok, true);
+		assert.equal(JSON.parse(error.stdout).editor.ok, false);
 		return true;
 	});
 });
