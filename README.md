@@ -1,4 +1,4 @@
-# Godot Engine
+# Godot Engine — MCP fork
 
 <p align="center">
   <a href="https://godotengine.org">
@@ -24,6 +24,11 @@ build, not an official stable engine release.
 - [Architecture](editor/debugger/godot_mcp/ARCHITECTURE.md)
 - [Build and test procedures](misc/godot_mcp_bridge/test/README.md)
 - [Remaining work and verification evidence](MCP_STATUS.md)
+
+Upgrading from the older OpenCode-only fork? The supported implementation is now
+`editor/debugger/godot_mcp` and `misc/godot_mcp_bridge`, with settings under
+`network/godot_mcp`. Replace the old `godot-opencode` client registration with the
+new `godot` registration using the quick-start guide; do not run both bridges.
 
 ## 2D and 3D cross-platform game engine
 
