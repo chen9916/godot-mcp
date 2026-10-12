@@ -16,6 +16,12 @@ the supported clients, not the project identity. The default branch is `master`.
 
 ### Verified 0.3.0 distribution
 
+Published on **2026-10-12 at 09:31 UTC** as a Windows x64 **prerelease**.
+All six GitHub assets (ZIP, ZIP checksum, TPZ, TPZ checksum, verification report,
+and source/file manifest) were downloaded; their sizes and SHA-256 hashes matched
+the verified originals before publication. The public release
+and its complete asset inventory were then checked without authentication.
+
 The release build is pinned to **`godot-mcp-v0.3.0`**, source commit
 **`e36894e16772baa1d2f777d0b5567da0adda780a`**. Its package passed all 11 final
 release gates: dependency audit, bridge compilation/default tests, native MCP and
