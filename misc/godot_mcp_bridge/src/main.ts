@@ -4,6 +4,8 @@ import path from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import type { JsonSchemaType, JsonSchemaValidator } from "@modelcontextprotocol/sdk/validation";
 
 import { as_error_text } from "./error_map.js";
 import { bridge_command } from "./connection_config.js";
@@ -11,7 +13,7 @@ import { is_async_runtime_method, operation_timeout_ms, wait_for_filesystem, wai
 import { to_mcp_error, to_structured_error } from "./protocol_error.js";
 import { session_has_capability } from "./session.js";
 import { SessionLifecycle } from "./session_lifecycle.js";
-import { get_scene_patch_schema_document, get_tool_definition, get_tool_list_for_mcp, is_tool_retry_safe } from "./tool_registry.js";
+import { get_animation_schema, get_scene_patch_schema_document, get_tool_definition, get_tool_list_for_mcp, is_tool_retry_safe } from "./tool_registry.js";
 
 interface CliOptions {
 	project_root?: string;
@@ -109,7 +111,7 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 	const server = new Server(
 		{
 			name: "godot-mcp",
-			version: "0.2.0",
+			version: "0.3.0",
 		},
 		{
 			capabilities: {
@@ -123,6 +125,8 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 		session_file: p_options.session_file,
 		timeout_ms: p_options.timeout_ms,
 	});
+	const animationSchemaValidator = new AjvJsonSchemaValidator();
+	const animationValidators = new Map<string, JsonSchemaValidator<unknown>>();
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
 		return {
@@ -157,6 +161,19 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 		delete args._token;
 
 		try {
+			if (tool.name.startsWith("godot.animation.") || tool.name === "godot.runtime.animation_get" || tool.name === "godot.runtime.animation_control") {
+				let validate = animationValidators.get(tool.name);
+				if (!validate) {
+					validate = animationSchemaValidator.getValidator(tool.inputSchema as JsonSchemaType);
+					animationValidators.set(tool.name, validate);
+				}
+				const validation = validate(args);
+				if (!validation.valid) {
+					return to_mcp_error({
+						code: "INVALID_ARGUMENT", message: validation.errorMessage, operation: tool.method, retryable: false,
+					});
+				}
+			}
 			const limits = {
 				signal: p_extra.signal,
 				...(tool.method === "filesystem.wait" || is_async_runtime_method(tool.method)
@@ -164,6 +181,9 @@ async function _run_mcp_server(p_options: CliOptions): Promise<void> {
 			};
 			if (tool.method === "bridge.scene.patch_schema") {
 				return _to_mcp_success({ ok: true, data: get_scene_patch_schema_document(), warnings: [] });
+			}
+			if (tool.method === "bridge.animation.schema") {
+				return _to_mcp_success({ ok: true, data: get_animation_schema(), warnings: [] });
 			}
 			if (tool.method === "godot.session.info") {
 				try {

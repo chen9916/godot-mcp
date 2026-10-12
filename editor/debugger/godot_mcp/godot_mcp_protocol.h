@@ -162,6 +162,7 @@ private:
 	Dictionary _method_scene_create(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_scene_instantiate(const Dictionary &p_params, int &r_error_code, String &r_error_message);
 	Dictionary _method_scene_apply_patch(const Dictionary &p_params, int &r_error_code, String &r_error_message);
+	Dictionary _method_animation(const String &p_method, const Dictionary &p_params, int &r_error_code, String &r_error_message);
 
 	// Node tools.
 	Dictionary _method_node_find(const Dictionary &p_params, int &r_error_code, String &r_error_message) const;

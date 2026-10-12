@@ -82,6 +82,25 @@ test("configuration export is read-only and non-interactive setup fails with a u
 	});
 });
 
+test("OpenCode CLI setup defaults to V2 and preserves existing legacy registrations", async (t) => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "Godot OpenCode release setup "));
+	t.after(() => fs.rm(directory, { recursive: true, force: true }));
+	const filename = path.join(directory, "opencode.json");
+	const flags = ["--client", "opencode", "--config", filename, "--no-check", "--json"];
+	const first = JSON.parse((await run(process.execPath, [bridge, "setup", ...flags], { windowsHide: true })).stdout)[0];
+	assert.equal(first.registered, true);
+	assert.deepEqual(JSON.parse(await fs.readFile(filename, "utf8")).mcp.servers.godot.command, [process.execPath, bridge]);
+	const legacy = JSON.stringify({ model: "keep", mcp: { other: { type: "local", command: ["node", "other.js"], enabled: true } } });
+	await fs.writeFile(filename, legacy);
+	const second = JSON.parse((await run(process.execPath, [bridge, "setup", ...flags], { windowsHide: true })).stdout)[0];
+	assert.equal(await fs.readFile(second.backup, "utf8"), legacy);
+	const kept = JSON.parse(await fs.readFile(filename, "utf8"));
+	assert.equal(kept.model, "keep");
+	assert.equal(kept.mcp.servers, undefined);
+	assert.deepEqual(kept.mcp.godot.command, [process.execPath, bridge]);
+	assert.deepEqual(kept.mcp.other.command, ["node", "other.js"]);
+});
+
 test("setup refuses a wrong Godot project and doctor reports a missing registration", async (t) => {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "Godot setup project checks "));
 	t.after(() => fs.rm(directory, { recursive: true, force: true }));

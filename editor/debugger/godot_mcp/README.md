@@ -112,6 +112,15 @@ Documentation:
 
 - `read_docs`: `docs.class_lookup`, `docs.member_lookup`, `docs.search`, `docs.inheritance`, `docs.examples`, `docs.list_versions`
 
+Animation authoring and playback:
+
+- `read_scene`: `animation.list`, `animation.get`, `animation.graph_get`, `animation.graph_validate`
+- `write_scene`: `animation.apply_patch`, `animation.graph_apply_patch`
+- `runtime_inspection`: `runtime.animation_get`, `runtime.animation_control`
+- The bridge-only `godot.animation.schema` publishes operation/value schemas offline.
+
+See [ANIMATION_TOOLS.md](ANIMATION_TOOLS.md) for animation contracts and examples.
+
 ## Editor methods
 
 The focused v2 declarative scene patching, validation, filesystem, resource-status,

@@ -105,7 +105,8 @@ function json_document(text: string): Record<string, any> {
 function json_entry_path(client: ClientId, value: Record<string, any>, options: ClientConfigOptions): string[] {
 	if (client !== "opencode") return ["mcpServers", config_name(options)];
 	const servers_entry = object(value.mcp) && object(value.mcp.servers) && (value.mcp.servers.type === "local" || value.mcp.servers.type === "remote");
-	const v2 = options.opencode_version === "2" || (options.opencode_version !== "1" && object(value.mcp) && Object.hasOwn(value.mcp, "servers") && !servers_entry);
+	const new_config = !Object.hasOwn(value, "mcp") || (object(value.mcp) && Object.keys(value.mcp).length === 0);
+	const v2 = options.opencode_version === "2" || (options.opencode_version !== "1" && (new_config || (object(value.mcp) && Object.hasOwn(value.mcp, "servers") && !servers_entry)));
 	return v2 ? ["mcp", "servers", config_name(options)] : ["mcp", config_name(options)];
 }
 function validate_containers(value: Record<string, any>, keys: string[]): void {
@@ -230,12 +231,13 @@ function unrelated_configuration(value: Record<string, any>, keys: string[]): un
 	const copy = structuredClone(value);
 	const parents: Array<[Record<string, any>, string]> = [];
 	let current = copy;
+	let complete = true;
 	for (const key of keys.slice(0, -1)) {
-		if (!object(current[key])) return copy;
+		if (!object(current[key])) { complete = false; break; }
 		parents.push([current, key]);
 		current = current[key];
 	}
-	delete current[keys[keys.length - 1]];
+	if (complete) delete current[keys[keys.length - 1]];
 	for (const [parent, key] of parents.reverse()) if (Object.keys(parent[key]).length === 0) delete parent[key];
 	return copy;
 }

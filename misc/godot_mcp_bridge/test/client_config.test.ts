@@ -150,6 +150,23 @@ test("OpenCode V1 and V2 use command arrays and preserve sibling settings", () =
 	}
 });
 
+test("new OpenCode configurations default to V2 without migrating existing V1 layouts", () => {
+	for (const original of ["", "{}", '{"model":"keep"}', '{"mcp":{}}']) {
+		const added = update_client_config("opencode", original, launch);
+		assert.deepEqual(parse_json(added.text).mcp.servers.godot, { type: "local", command: [launch.command, ...launch.args], disabled: false });
+		assert.deepEqual(read_client_registration("opencode", added.text), { present: true, enabled: true, launch });
+		assert.equal(update_client_config("opencode", added.text, launch).changed, false);
+	}
+	const legacy = '{"mcp":{"other":{"type":"local","command":["node","other.js"],"enabled":true}}}';
+	const preserved = parse_json(update_client_config("opencode", legacy, launch).text);
+	assert.equal(preserved.mcp.servers, undefined);
+	assert.equal(preserved.mcp.godot.enabled, true);
+	assert.deepEqual(preserved.mcp.other.command, ["node", "other.js"]);
+	const explicit_legacy = parse_json(update_client_config("opencode", "", launch, { opencode_version: "1" }).text);
+	assert.equal(explicit_legacy.mcp.godot.enabled, true);
+	assert.equal(explicit_legacy.mcp.servers, undefined);
+});
+
 test("user paths and environment overrides follow each supported client", () => {
 	const options: ClientConfigOptions = { platform: "linux", home: "/home/Jane Doe/游戏", env: {} };
 	const expected: Record<ClientId, string | null> = {

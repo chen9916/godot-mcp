@@ -448,6 +448,14 @@ Example: `godot.runtime.capture_viewport({"run_id":"<run-uuid>","viewport":"/roo
 
 Lifecycle: the PNG is written to the runtime host's temporary directory. Consumers should copy it if long-term retention is required.
 
+## Animation tools
+
+The nine animation tools provide bounded clip/track/key and nested graph
+inspection, scene-version-guarded local-copy atomic authoring, graph validation,
+and owned-runtime playback controls. `godot.animation.schema` returns the complete
+operation/Variant schemas offline. See [ANIMATION_TOOLS.md](ANIMATION_TOOLS.md) for
+the tool table, safety contract, and complete authoring examples.
+
 ## Diagnostics tool
 
 ### `godot.diagnostics.get` (`diagnostics.get`)

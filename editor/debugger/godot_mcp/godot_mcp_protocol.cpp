@@ -47,6 +47,8 @@
 #include "core/templates/vector.h"
 #include "core/variant/callable.h"
 #include "core/version.h"
+#include "editor/debugger/godot_mcp/godot_mcp_animation_graph.h"
+#include "editor/debugger/godot_mcp/godot_mcp_animation_library.h"
 #include "editor/debugger/godot_mcp/godot_mcp_batch_result.h"
 #include "editor/debugger/godot_mcp/godot_mcp_scene_patch.h"
 #include "editor/doc/editor_help.h"
@@ -85,6 +87,10 @@ constexpr const char *SCRIPT_WORKSPACE_SCRIPT_EDITOR = "script_editor";
 static String _get_scene_version(Node *p_root, int p_history_id) {
 	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
 	if (!p_root || !manager || p_history_id == EditorUndoRedoManager::INVALID_HISTORY) {
+		return String();
+	}
+	String preflight_error;
+	if (!GodotMCPAnimationGraph::preflight_scene(p_root, preflight_error)) {
 		return String();
 	}
 	UndoRedo *undo_redo = manager->get_or_create_history(p_history_id).undo_redo;
@@ -1398,6 +1404,7 @@ String GodotMCPProtocol::_capability_for_method(const String &p_method) const {
 			p_method == "node.list_properties" || p_method == "node.get_properties" || p_method == "node.get_properties_batch" ||
 			p_method == "scene.list" || p_method == "node.find" || p_method == "node.get_groups" ||
 			p_method == "signal.list" || p_method == "signal.get_connections" ||
+			p_method == "animation.list" || p_method == "animation.get" || p_method == "animation.graph_get" || p_method == "animation.graph_validate" ||
 			p_method == "theme.get_overrides") {
 		return "read_scene";
 	}
@@ -1406,6 +1413,7 @@ String GodotMCPProtocol::_capability_for_method(const String &p_method) const {
 			p_method == "node.set_properties" || p_method == "node.set_properties_batch" || p_method == "script.attach" ||
 			p_method == "script.attach_external" || p_method == "script.attach_built_in" ||
 			p_method == "scene.open" || p_method == "scene.create" || p_method == "scene.instantiate" || p_method == "scene.apply_patch" ||
+			p_method == "animation.apply_patch" || p_method == "animation.graph_apply_patch" ||
 			p_method == "node.set_groups" ||
 			p_method == "signal.connect" || p_method == "signal.disconnect" ||
 			p_method == "theme.set_overrides") {
@@ -1440,6 +1448,7 @@ String GodotMCPProtocol::_capability_for_method(const String &p_method) const {
 		return "runtime_control";
 	}
 	if (p_method == "runtime.get_tree" || p_method == "runtime.get_property" || p_method == "runtime.set_property" ||
+			p_method == "runtime.animation_get" || p_method == "runtime.animation_control" ||
 			p_method == "runtime.call" || p_method == "runtime.input_action" || p_method == "runtime.input_event") {
 		return "runtime_inspection";
 	}
@@ -1713,6 +1722,12 @@ Dictionary GodotMCPProtocol::_dispatch_method(const String &p_method, const Dict
 	if (p_method == "runtime.call") {
 		return _method_runtime_request("call", p_params, r_error_code, r_error_message);
 	}
+	if (p_method == "runtime.animation_get") {
+		return _method_runtime_request("animation_get", p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "runtime.animation_control") {
+		return _method_runtime_request("animation_control", p_params, r_error_code, r_error_message);
+	}
 	if (p_method == "runtime.input_action") {
 		return _method_runtime_request("input_action", p_params, r_error_code, r_error_message);
 	}
@@ -1738,6 +1753,10 @@ Dictionary GodotMCPProtocol::_dispatch_method(const String &p_method, const Dict
 	}
 	if (p_method == "scene.apply_patch") {
 		return _method_scene_apply_patch(p_params, r_error_code, r_error_message);
+	}
+	if (p_method == "animation.list" || p_method == "animation.get" || p_method == "animation.apply_patch" ||
+			p_method == "animation.graph_get" || p_method == "animation.graph_apply_patch" || p_method == "animation.graph_validate") {
+		return _method_animation(p_method, p_params, r_error_code, r_error_message);
 	}
 
 	// Node tools.
@@ -1841,6 +1860,7 @@ Dictionary GodotMCPProtocol::_method_session_info() const {
 	info["transport"] = "jsonrpc-line";
 	info["protocol"] = "godot-mcp-v2";
 	info["protocol_version"] = 2;
+	info["animation_schema_version"] = 1;
 	return _make_ok(info);
 }
 
@@ -5804,6 +5824,12 @@ Dictionary GodotMCPProtocol::_method_scene_apply_patch(const Dictionary &p_param
 		track_disk_identity = true;
 	}
 
+	String preflight_error;
+	if (!GodotMCPAnimationGraph::preflight_scene(root, preflight_error)) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: animation scene preflight: " + preflight_error;
+		return Dictionary();
+	}
 	GodotMCPScenePatch::Context context;
 	context.root = root;
 	context.scene_path = root->get_scene_file_path();
@@ -5854,6 +5880,89 @@ Dictionary GodotMCPProtocol::_method_scene_apply_patch(const Dictionary &p_param
 		}
 	}
 
+	return _make_ok(data, warnings);
+}
+
+// ---------------------------------------------------------------------------
+// Animation inspection and authoring.
+// ---------------------------------------------------------------------------
+
+Dictionary GodotMCPProtocol::_method_animation(const String &p_method, const Dictionary &p_params, int &r_error_code, String &r_error_message) {
+	const bool mutation = p_method == "animation.apply_patch" || p_method == "animation.graph_apply_patch";
+	if (mutation) {
+		for (const String &guard : { String("expected_scene_path"), String("expected_scene_version"), String("node_path") }) {
+			const Variant value = p_params.get(guard, Variant());
+			if (value.get_type() != Variant::STRING || String(value).is_empty()) {
+				r_error_code = ERROR_INVALID_ARGUMENT;
+				r_error_message = "INVALID_ARGUMENT: animation mutations require a non-empty string " + guard + ".";
+				return Dictionary();
+			}
+		}
+	}
+	Node *root = _get_edited_scene_root(p_params, r_error_code, r_error_message);
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
+	if (!root) {
+		r_error_code = ERROR_NOT_FOUND;
+		r_error_message = "NOT_FOUND: No edited scene is currently open.";
+		return Dictionary();
+	}
+	String preflight_error;
+	if (!GodotMCPAnimationGraph::preflight_scene(root, preflight_error, p_method == "animation.graph_apply_patch")) {
+		r_error_code = ERROR_INVALID_ARGUMENT;
+		r_error_message = "INVALID_ARGUMENT: animation scene preflight: " + preflight_error;
+		return Dictionary();
+	}
+	EditorUndoRedoManager *manager = EditorUndoRedoManager::get_singleton();
+	const int history_id = EditorNode::get_editor_data().get_current_edited_scene_history_id();
+	if (!manager || history_id == EditorUndoRedoManager::INVALID_HISTORY) {
+		r_error_code = ERROR_INTERNAL;
+		r_error_message = "INTERNAL: active scene undo history is unavailable.";
+		return Dictionary();
+	}
+	UndoRedo *history = manager->get_or_create_history(history_id).undo_redo;
+	if (!history) {
+		r_error_code = ERROR_INTERNAL;
+		r_error_message = "INTERNAL: active scene undo history is unavailable.";
+		return Dictionary();
+	}
+	GodotMCPScenePatch::Context context;
+	context.root = root;
+	context.scene_path = root->get_scene_file_path();
+	context.scene_version = GodotMCPScenePatch::compute_scene_version(root, history_id, history->get_version());
+	context.history_id = history_id;
+	context.undo_redo = history;
+	context.undo_redo_manager = manager;
+	if (mutation && String(p_params["expected_scene_version"]) != context.scene_version) {
+		method_error_details["expected_scene_version"] = context.scene_version;
+		method_error_details["received_scene_version"] = p_params["expected_scene_version"];
+		r_error_code = ERROR_CONFLICT;
+		r_error_message = "CONFLICT: active scene changed since animation inspection; refresh the scene_version before editing.";
+		return Dictionary();
+	}
+	Array warnings;
+	Dictionary data;
+	GodotMCPAnimationGraph graph;
+	GodotMCPAnimationLibrary library;
+	if (p_method == "animation.list") {
+		data = library.list(p_params, context, r_error_code, r_error_message);
+	} else if (p_method == "animation.get") {
+		data = library.get(p_params, context, r_error_code, r_error_message);
+	} else if (p_method == "animation.apply_patch") {
+		data = library.apply(p_params, context, warnings, r_error_code, r_error_message);
+	} else if (p_method == "animation.graph_get") {
+		data = graph.inspect(p_params, context, r_error_code, r_error_message);
+	} else if (p_method == "animation.graph_validate") {
+		data = graph.validate(p_params, context, r_error_code, r_error_message);
+	} else {
+		data = graph.apply(p_params, context, warnings, r_error_code, r_error_message);
+	}
+	if (r_error_code != 0) {
+		return Dictionary();
+	}
+	data["scene_path"] = context.scene_path;
+	data["scene_version"] = GodotMCPScenePatch::compute_scene_version(root, history_id, history->get_version());
 	return _make_ok(data, warnings);
 }
 

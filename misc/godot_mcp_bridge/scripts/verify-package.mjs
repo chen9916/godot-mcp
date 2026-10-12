@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { TOOL_DEFINITIONS } from "../dist/tool_registry.js";
 
 assert.ok(process.argv.length === 4 || (process.argv.length === 5 && process.argv[4] === "--check-source"), "Usage: node scripts/verify-package.mjs --package <new bundle directory> [--check-source]");
 assert.equal(process.argv[2], "--package");
@@ -44,7 +45,7 @@ if (process.argv.includes("--check-source")) {
 	assert.equal(git(["status", "--porcelain", "--untracked-files=normal"]), "", "Commit the source before final package verification.");
 	for (const [name, digest] of Object.entries(manifest.source_sha256)) assert.equal(await sha256(contained_file(engine, name)), digest, `Source hash mismatch: ${name}`);
 }
-for (const name of ["Godot.exe", "godot-mcp.cmd", "_sc_", "LICENSE.txt", "COPYRIGHT.txt", "runtime/node.exe", "runtime/LICENSE", "bridge/dist/main.js", "bridge/dist/setup.js", "bridge/dist/client_config.js", "bridge/dist/setup_doctor.js", "bridge/dist/setup_storage.js", "bridge/README.md", "bridge/package-lock.json"]) assert.ok(name in manifest.files_sha256, `Missing release component: ${name}`);
+for (const name of ["Godot.exe", "godot-mcp.cmd", "Setup.cmd", "Setup-OpenCode.cmd", "Check-Connection.cmd", "QUICKSTART.md", "_sc_", "LICENSE.txt", "COPYRIGHT.txt", "runtime/node.exe", "runtime/LICENSE", "bridge/dist/main.js", "bridge/dist/animation_tools.js", "bridge/dist/setup.js", "bridge/dist/client_config.js", "bridge/dist/setup_doctor.js", "bridge/dist/setup_storage.js", "bridge/README.md", "bridge/package-lock.json"]) assert.ok(name in manifest.files_sha256, `Missing release component: ${name}`);
 await assert.rejects(fs.stat(path.join(package_directory, "bridge/node_modules/typescript")), { code: "ENOENT" });
 await assert.rejects(fs.stat(path.join(package_directory, "bridge/.test-dist")), { code: "ENOENT" });
 if (manifest.export_templates !== undefined) {
@@ -90,7 +91,9 @@ if (manifest.export_templates !== undefined) {
 		}
 	}
 }
-const directory = await fs.mkdtemp(path.join(os.tmpdir(), "Godot MCP package 婕㈠瓧 "));
+const temporary_base = process.platform === "win32" && process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Temp", "opencode") : os.tmpdir();
+await fs.mkdir(temporary_base, { recursive: true });
+const directory = await fs.mkdtemp(path.join(temporary_base, "Godot MCP package 项目 "));
 let bundle = path.join(directory, "Portable Godot");
 const project = path.join(directory, "Disposable Project");
 const stop_file = path.join(directory, "stop-editor");
@@ -150,9 +153,22 @@ async function connect() {
 	const client = new Client({ name: "independent-package-verification", version: "1" }, { capabilities: {} });
 	await client.connect(transport);
 	assert.equal(client.getServerVersion()?.name, "godot-mcp");
+	const bridge_package = JSON.parse(await fs.readFile(path.join(bundle, "bridge", "package.json"), "utf8"));
+	assert.equal(client.getServerVersion()?.version, bridge_package.version);
 	const tools = (await client.listTools()).tools;
-	assert.ok(tools.length >= 74);
+	assert.deepEqual(tools.map((tool) => tool.name).sort(), TOOL_DEFINITIONS.map((tool) => tool.name).sort(), "Packaged bridge must expose the exact current tool catalog.");
 	assert.ok(tools.some((tool) => tool.name === "godot.scene.patch_schema"));
+	assert.ok(tools.some((tool) => tool.name === "godot.animation.graph_apply_patch"));
+	const schema = await tool(client, "godot.animation.schema");
+	assert.equal(schema.schema_version, 1);
+	// Run the double-click launchers non-interactively against a disposable
+	// profile, never the user's real OpenCode registration.
+	const opencode_file = path.join(directory, "disposable-opencode.jsonc");
+	const launcher_options = { ...cli_options, env: { ...process.env, GODOT_MCP_NO_PAUSE: "1" }, windowsVerbatimArguments: true };
+	await exec_file_async(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `""${path.join(bundle, "Setup-OpenCode.cmd")}" --config "${opencode_file}" --project-root "${project}" --replace"`], launcher_options);
+	const opencode = JSON.parse(await fs.readFile(opencode_file, "utf8"));
+	assert.deepEqual(opencode.mcp.servers.godot.command, [node, bridge, "--project-root", project]);
+	await exec_file_async(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `""${path.join(bundle, "Check-Connection.cmd")}" --client opencode --config "${opencode_file}""`], launcher_options);
 	return client;
 }
 async function connected_session(client, expected_id) {
@@ -162,6 +178,7 @@ async function connected_session(client, expected_id) {
 		const data = info.structuredContent?.data;
 		if (data?.bridge?.state === "connected" && data.bridge.session_id === expected_id) {
 			assert.ok(data.editor);
+			assert.equal(data.editor.data.animation_schema_version, 1, "Editor must include the animation suite, not just the new bridge.");
 			return;
 		}
 		await new Promise((resolve) => setTimeout(resolve, 100));
@@ -232,6 +249,6 @@ try {
 	if (active_client) await active_client.close().catch(() => {});
 	await stop_editor();
 	// Only this mkdtemp directory is removed after its owned processes have exited.
-	assert.equal(path.dirname(directory), os.tmpdir());
+	assert.equal(path.dirname(directory), temporary_base);
 	await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

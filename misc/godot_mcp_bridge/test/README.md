@@ -14,12 +14,11 @@ npm.cmd run build
 npm.cmd audit
 ```
 
-On platforms without `npm.cmd`, use `npm`. `npm test` compiles `.test-dist` and runs unit, localhost transport, independent stdio, and configuration-export tests. Its runner selects outputs corresponding to current test sources, excluding stale outputs from deleted or renamed tests. It does not require Godot unless optional workflow environment variables are set. The five live workflows below are skipped by default; a successful default run therefore leaves those workflows unverified.
+On platforms without `npm.cmd`, use `npm`. `npm test` compiles `.test-dist` and runs unit, localhost transport, independent stdio, and configuration-export tests. Its runner selects outputs corresponding to current test sources, excluding stale outputs from deleted or renamed tests. It does not require Godot unless optional workflow environment variables are set. The six live workflows below are skipped by default; a successful default run therefore leaves those workflows unverified.
 
-For 0.2.0, the recorded default run passed 80 tests with 5 live workflows skipped
-(85 total). The lockfile uses MCP SDK 1.32.1; the selected Windows release runtime
-is Node.js 22.23.1. The current audit reports 0 vulnerabilities. These results
-are separate from the native/live checks and final package evidence in the status document.
+The lockfile uses MCP SDK 1.32.1; the selected Windows release runtime is Node.js
+22.23.1. Executed test counts and audit results are recorded in the status
+document, separately from the native/live checks and final package evidence.
 
 Transport tests split multibyte UTF-8 across response chunks and reset decoder
 state on reconnect. Unit and independent SDK fixtures check cancellation during
@@ -46,23 +45,20 @@ Godot-side tests in `tests/editor/godot_mcp/` are included when building with `t
 
 ```powershell
 $env:PYTHONPATH = (Resolve-Path "../scons").Path
-python -m SCons platform=windows target=editor tests=yes extra_suffix=mcp_latest_verify werror=yes debug_symbols=no accesskit=no angle=no -j12 bin/godot.windows.editor.x86_64.mcp_latest_verify.exe
-$mcpTestLog = Join-Path ([System.IO.Path]::GetTempPath()) ("godot-mcp-native-" + [guid]::NewGuid().ToString())
-$mcpTestProcess = Start-Process -FilePath (Resolve-Path "./bin/godot.windows.editor.x86_64.mcp_latest_verify.exe") -ArgumentList @("--headless", "--test", "--test-case=*[GodotMCP]*") -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$mcpTestLog.stdout.log" -RedirectStandardError "$mcpTestLog.stderr.log"
-Get-Content -LiteralPath "$mcpTestLog.stdout.log", "$mcpTestLog.stderr.log"
-if ($mcpTestProcess.ExitCode -ne 0) { throw "Native MCP tests failed: $($mcpTestProcess.ExitCode)" }
+python -m SCons platform=windows target=editor tests=yes extra_suffix=mcp_controller_verify werror=yes debug_symbols=no accesskit=no angle=no -j12 bin/godot.windows.editor.x86_64.mcp_controller_verify.exe
+node misc/godot_mcp_bridge/scripts/run-native-tests.mjs (Resolve-Path "./bin/godot.windows.editor.x86_64.mcp_controller_verify.exe").Path
 ```
 
 The explicit executable target creates a separate verification binary and avoids
 the default targets which copy optional DLLs beside a possibly running editor.
 It does not build a console companion. Native test fixtures resolve relative to
 the executable at `../tests/data`, so a copied executable needs that fixture
-layout too. A disposable installation can copy the executable into `bin/`, place
-`_sc_` beside it to isolate settings, and copy `tests/data/godot_mcp/` to the same
-relative location. Node `execFile` also supports hidden execution and captured
-output. Run the core UndoRedo regressions separately with
-`--test-case=*[UndoRedo]*`. Other platforms require their corresponding build
-options and binary name.
+layout too. The runner creates that disposable layout, places `_sc_` beside its
+copied binary, and redirects profile, user-data, and temporary directories. It
+runs `[GodotMCP]` and `[UndoRedo]` separately, enforces an owned-process timeout,
+and rejects unexpected error/warning diagnostics. Logs and small fixtures are
+retained at the reported path; the copied binary is removed. Other platforms
+require their corresponding build options and binary name.
 
 ## Live runtime workflow
 
@@ -89,6 +85,36 @@ node --test .test-dist/test/scene_patch_integration.test.js
 ```
 
 It exercises root rename dry runs/commits, subtree move/save, JSON integer positions and packed arrays, sibling collision rejection, and returned paths after property-based renames. It creates a unique fixture directory and removes it afterward. Native scene-patch tests separately cover undo/redo, snapshots, packing, and SceneTree ownership.
+
+## Isolated animation workflow
+
+This workflow copies a rebuilt editor into a uniquely owned self-contained
+installation and authors animation resources in a disposable project. It uses
+the actual standard MCP bridge for discovery, clip/track/key and graph patches,
+validation, guarded rollback/dry runs, persistence, and owned-runtime animation
+playback. It never changes an existing user's project or running editor.
+
+```powershell
+npm.cmd run build
+npm.cmd run build:test
+$env:GODOT_MCP_ANIMATION_EDITOR = "C:\absolute\path\to\rebuilt\Godot.exe"
+node --test .test-dist/test/animation_integration.test.js
+```
+
+Clear `GODOT_MCP_ANIMATION_EDITOR` before running the default bridge suite. On
+Windows the animation fixture uses the approved OpenCode temporary directory.
+Native animation tests are included in the ordinary `[GodotMCP]` test filter.
+The workflow keeps an ordinary non-`@tool` controller script attached to the
+AnimationTree throughout authoring. It checks script/export preservation through
+packing, dry runs, actual editor-menu undo/redo, and save/reload, and calls the
+preserved controller in the owned runtime. It also checks typed Dictionary and
+packed integer/vector reinsertion, graph parameter preservation on rename,
+automatic and requested state transitions, all 16 playback actions, bounded
+snapshots, freed-reference serialization, and stale-run rejection. Profile,
+user-data, logs, and temporary paths are redirected for both owned processes.
+It also verifies runtime pause/resume and fails on unexpected editor/runtime
+error or warning diagnostics. The default suite skips this workflow; setting the
+editor variable opts into execution rather than treating skipped cases as proof.
 
 ## Isolated editor setup workflow
 
@@ -127,13 +153,15 @@ runs headless. Cleanup stops only owned processes before removing temporary data
 When finished, clear optional flags before running the default suite:
 
 ```powershell
-Remove-Item Env:GODOT_MCP_INTEGRATION, Env:GODOT_MCP_SCENE_PATCH_INTEGRATION, Env:GODOT_MCP_INTEGRATION_PROJECT, Env:GODOT_MCP_SETUP_EDITOR, Env:GODOT_MCP_RELEASE_EDITOR, Env:GODOT_MCP_RELEASE_BUNDLE, Env:GODOT_MCP_PROTOCOL_EDITOR -ErrorAction SilentlyContinue
+Remove-Item Env:GODOT_MCP_INTEGRATION, Env:GODOT_MCP_SCENE_PATCH_INTEGRATION, Env:GODOT_MCP_INTEGRATION_PROJECT, Env:GODOT_MCP_SETUP_EDITOR, Env:GODOT_MCP_RELEASE_EDITOR, Env:GODOT_MCP_RELEASE_BUNDLE, Env:GODOT_MCP_PROTOCOL_EDITOR, Env:GODOT_MCP_ANIMATION_EDITOR -ErrorAction SilentlyContinue
 ```
 
 ## Isolated native protocol regressions
 
 This workflow copies the selected rebuilt editor into a temporary self-contained
-installation and runs actual endpoint requests. It verifies scene containment,
+installation, redirects profile/user-data/temporary paths, and runs actual
+endpoint requests. Fixture commands use atomic file publication so concurrent
+tests cannot expose partial JSON to the editor. It verifies scene containment,
 reparent/delete/batch-delete ownership across undo/redo and save/reload, retained
 resource creation and its capacity/conflict guards, canonical resource paths,
 split UTF-8 requests, the request byte limit, and all four GDScript LSP operations.
@@ -161,20 +189,23 @@ refuses to overwrite an existing package. Supply the complete license from the
 selected Node distribution. Run from the bridge directory:
 
 ```powershell
-$mcpReleaseDirectory = [System.IO.Path]::GetFullPath("../../artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007")
-$mcpReleaseEditor = [System.IO.Path]::GetFullPath("../../bin/godot.windows.editor.x86_64.mcp_latest_verify.exe")
+$mcpReleaseDirectory = [System.IO.Path]::GetFullPath("../../artifacts/Godot-MCP-0.3.0-Windows-x86_64-20261012")
+$mcpReleaseEditor = [System.IO.Path]::GetFullPath("../../bin/godot.windows.editor.x86_64.mcp_controller_verify.exe")
 npm.cmd run package:windows -- --editor "$mcpReleaseEditor" --output "$mcpReleaseDirectory" --node-license "C:\absolute\path\to\Node\LICENSE"
 node scripts/verify-package.mjs --package "$mcpReleaseDirectory" --check-source
 $env:GODOT_MCP_RELEASE_BUNDLE = $mcpReleaseDirectory
 node --test .test-dist/test/release_editor_integration.test.js
 ```
 
-The payload contains the editor, `godot-mcp.cmd` setup launcher, bridge build, bundled Node, lockfile-installed
+The payload contains the editor, `godot-mcp.cmd`, double-click `Setup.cmd`,
+`Setup-OpenCode.cmd`, `Check-Connection.cmd`, a quick-start guide, bridge build, bundled Node, lockfile-installed
 production dependencies, and notices. Its manifest records the source commit,
 source and payload hashes, and executable versions. `--check-source` verifies
 that the clean checkout still matches that manifest. The smoke verifier checks
 the actual launcher with quoted paths, setup/doctor against a disposable client
-file, an independent SDK client, scene mutation/save, saved state across an editor
+file, the double-click OpenCode setup/doctor wrappers using a disposable V2
+configuration, exact tool discovery and animation-suite negotiation, an
+independent SDK client, scene mutation/save, saved state across an editor
 restart, reconnecting the same bridge, and exporting/connecting after moving a
 temporary copy. Packaging currently supports Windows x86_64.
 Every current bridge source module contributes its compiled JavaScript file,
@@ -189,7 +220,7 @@ inputs together; partial pairs are rejected before creating an output directory.
 Use a fresh output path, for example:
 
 ```powershell
-$mcpTemplateReleaseDirectory = [System.IO.Path]::GetFullPath("../../artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007-templates")
+$mcpTemplateReleaseDirectory = $mcpReleaseDirectory
 npm.cmd run package:windows -- --editor "$mcpReleaseEditor" --output "$mcpTemplateReleaseDirectory" --node-license "C:\absolute\path\to\Node\LICENSE" --template-debug "C:\absolute\path\to\template_debug.exe" --template-release "C:\absolute\path\to\template_release.exe" --template-debug-console "C:\absolute\path\to\template_debug.console.exe" --template-release-console "C:\absolute\path\to\template_release.console.exe"
 node scripts/verify-package.mjs --package "$mcpTemplateReleaseDirectory" --check-source
 node scripts/verify-windows-export.mjs --package "$mcpTemplateReleaseDirectory"
@@ -250,6 +281,22 @@ writes an adjacent `.tpz.sha256`; existing outputs are refused. Fixed metadata
 and level-six DEFLATE reproduce identical inputs with the same Python/zlib
 runtime. Install the TPZ through **Manage Export Templates > Install from File**;
 it supports Windows x86_64 for the configuration recorded in the manifest.
+
+The complete ready-to-ship gate runs the default bridge suite, native units,
+package/source and launcher checks, actual Windows exports, and the four
+isolated animation, protocol, release, and settings/setup workflows serially.
+It writes per-check logs and a `.verification.json` only after every check passes:
+
+```powershell
+node scripts/verify-release.mjs --package "$mcpTemplateReleaseDirectory"
+python scripts/package-windows-archive.py --package "$mcpTemplateReleaseDirectory" --output "$mcpTemplateReleaseDirectory.zip"
+```
+
+The ZIP builder requires that passing report and matching manifest, rejects
+changed/unlisted files, verifies ZIP CRCs, inventory and entry hashes, and writes
+a `.zip.sha256`. Outputs never overwrite existing archives. Upload the ZIP,
+its checksum, the standalone TPZ/checksum, and the verification report as release
+assets; do not commit binaries or local client configurations to Git.
 
 ## Coverage and limits
 

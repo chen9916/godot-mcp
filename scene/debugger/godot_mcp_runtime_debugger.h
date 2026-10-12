@@ -76,6 +76,9 @@ class GodotMCPRuntimeDebugger : public Object {
 	static bool _variant_to_vector2(const Variant &p_value, Vector2 &r_vector);
 	static Dictionary _serialize_tree(Node *p_node, int p_depth, int p_max_depth, int p_max_nodes, int &r_count, bool &r_truncated);
 	static bool _has_property(Object *p_object, const StringName &p_property);
+	Dictionary _animation_snapshot(Node *p_node, const String &p_playback_path, const Array &p_parameter_names, int p_limit) const;
+	bool _validate_animation_request(const String &p_request_id, const String &p_operation, const Dictionary &p_params,
+			Node *&r_node, String &r_playback_path, Array &r_parameter_names, int &r_limit);
 
 	Node *_resolve_node(const String &p_path) const;
 	void _send_ready();
@@ -89,6 +92,8 @@ class GodotMCPRuntimeDebugger : public Object {
 	void _handle_get_property(const String &p_request_id, const Dictionary &p_params);
 	void _handle_set_property(const String &p_request_id, const Dictionary &p_params);
 	void _handle_call(const String &p_request_id, const Dictionary &p_params);
+	void _handle_animation_get(const String &p_request_id, const Dictionary &p_params);
+	void _handle_animation_control(const String &p_request_id, const Dictionary &p_params);
 	void _handle_input_action(const String &p_request_id, const Dictionary &p_params);
 	void _handle_input_event(const String &p_request_id, const Dictionary &p_params);
 	void _handle_wait_frames(const String &p_request_id, const Dictionary &p_params);

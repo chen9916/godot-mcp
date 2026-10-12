@@ -68,7 +68,9 @@ test("independent stdio MCP clients discover and call the same Godot tools indep
 			const names = tools.map((tool) => tool.name);
 			assert.ok(names.includes("godot.scene.get_active"));
 			assert.ok(names.includes("godot.scene.patch_schema"));
-			assert.ok(names.length >= 74);
+			assert.ok(names.includes("godot.animation.graph_apply_patch"));
+			assert.ok(names.includes("godot.runtime.animation_control"));
+			assert.ok(names.length >= 83);
 			if (expected_names) {
 				assert.deepEqual(names, expected_names);
 			}
@@ -83,6 +85,18 @@ test("independent stdio MCP clients discover and call the same Godot tools indep
 			const denied = CallToolResultSchema.parse(await client.callTool({ name: "godot.node.delete", arguments: { node_path: "/root/Child" } }));
 			assert.equal(denied.isError, true);
 			assert.equal((denied.structuredContent?.error as { code: string }).code, "CAPABILITY_DENIED");
+			const animationDenied = CallToolResultSchema.parse(await client.callTool({ name: "godot.animation.graph_apply_patch", arguments: {
+				expected_scene_path: "res://example.tscn", expected_scene_version: "example", node_path: "AnimationTree",
+				operations: [{ op: "set_root", type: "AnimationNodeBlendTree" }],
+			} }));
+			assert.equal(animationDenied.isError, true);
+			assert.equal((animationDenied.structuredContent?.error as { code: string }).code, "CAPABILITY_DENIED");
+			const malformedAnimation = CallToolResultSchema.parse(await client.callTool({ name: "godot.animation.graph_apply_patch", arguments: {
+				expected_scene_path: "res://example.tscn", expected_scene_version: "example", node_path: "AnimationTree",
+				operations: [{ op: "connect", from: "Idle", to: "output", input: -1 }],
+			} }));
+			assert.equal(malformedAnimation.isError, true);
+			assert.equal((malformedAnimation.structuredContent?.error as { code: string }).code, "INVALID_ARGUMENT");
 			const scalar = CallToolResultSchema.parse(await client.callTool({ name: "godot.project.get_setting", arguments: { key: "example" } }));
 			assert.deepEqual(scalar.content, [{ type: "text", text: "42" }]);
 			assert.equal(scalar.structuredContent, undefined);
@@ -92,6 +106,7 @@ test("independent stdio MCP clients discover and call the same Godot tools indep
 	}
 	assert.ok(calls.includes("scene.get_active"));
 	assert.equal(calls.includes("node.delete"), false);
+	assert.equal(calls.includes("animation.graph_apply_patch"), false);
 });
 
 for (const version of ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]) {
@@ -127,6 +142,14 @@ for (const version of ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]) 
 			const schema = await request("tools/call", { name: "godot.scene.patch_schema", arguments: {} });
 			assert.equal(schema.isError, false);
 			assert.equal(schema.content[0].type, "text");
+			const animationSchema = await request("tools/call", { name: "godot.animation.schema", arguments: {} });
+			assert.equal(animationSchema.isError, false);
+			assert.equal(animationSchema.structuredContent.data.runtime_actions.length, 16);
+			const malformed = await request("tools/call", { name: "godot.runtime.animation_control", arguments: {
+				run_id: "owned-run", node_path: "/root/Player/AnimationTree", action: "state_travel",
+			} });
+			assert.equal(malformed.isError, true);
+			assert.equal(malformed.structuredContent.error.code, "INVALID_ARGUMENT");
 		} finally {
 			await transport.close();
 		}

@@ -26,7 +26,7 @@ GodotMCPServer -> GodotMCPProtocol
 
 ## MCP boundary and client setup
 
-The standard MCP server is the TypeScript/Node bridge. Its MCP SDK handles initialization, protocol-version negotiation, tool discovery, and tool calls over stdio. The registry advertises 74 Godot tools. The editor's localhost TCP port speaks the Godot-specific JSON-RPC API; coding agents connect through the bridge rather than pointing an HTTP MCP client at that port.
+The standard MCP server is the TypeScript/Node bridge. Its MCP SDK handles initialization, protocol-version negotiation, tool discovery, and tool calls over stdio. The registry advertises 83 Godot tools, including the animation suite. The editor's localhost TCP port speaks the Godot-specific JSON-RPC API; coding agents connect through the bridge rather than pointing an HTTP MCP client at that port.
 
 The Godot protocol version 2 refers to the internal editor/bridge contract. It is separate from the date-based MCP protocol versions negotiated by the SDK.
 
@@ -46,6 +46,8 @@ Source paths, C++ classes, stored settings, session metadata, runtime flags, and
 | `GodotMCPServer` | editor | Localhost endpoint lifecycle, unique session UUID, capability advertisement, and ownership-safe session metadata. |
 | `GodotMCPProtocol` | editor | JSON-RPC framing/dispatch, session and capability guards, and delegation to focused modules. Existing scene/editor methods remain here. |
 | `GodotMCPScenePatch` | editor | Declarative scene/resource graph validation, optimistic scene-version checks, request-local reference resolution, and one-action undo/redo planning. It never writes scene text directly. |
+| `GodotMCPAnimationGraph` | editor | Nested AnimationTree inspection, structural graph edits, local-copy atomic undo transactions, and graph validation. |
+| `GodotMCPAnimationLibrary` | editor | Animation library/clip discovery and local-copy transactional editing of all animation track types and keyframes. |
 | `GodotMCPError` | editor | Stable error names and structured error fields. |
 | `GodotMCPBatchResult` | editor | Successful and failed per-item results with aggregate counts. |
 | `GodotMCPScriptValidation` | editor | Editor-language validation of disk or supplied source without opening a scene or editor tab. |
@@ -55,7 +57,7 @@ Source paths, C++ classes, stored settings, session metadata, runtime flags, and
 | `GodotMCPRuntimeController` | editor | Ownership of one MCP-started run, run IDs, lifecycle/crash state, and debugger requests. It never stops an unrelated run. |
 | `GodotMCPRuntimeInspector` | editor | Godot debugger-session handshake, request deduplication, pending responses, and runtime diagnostic routing. |
 | `GodotMCPViewportCapture` | editor | Focused capture entry point delegated through the owned runtime. |
-| `GodotMCPRuntimeDebugger` | game | Runtime-only node access, calls, input, bounded frame waits, diagnostics, and PNG capture. It is installed only when the editor supplies an MCP run ID. |
+| `GodotMCPRuntimeDebugger` | game | Runtime-only node access, calls, animation playback/state/parameter controls, input, bounded frame waits, diagnostics, and PNG capture. It is installed only when the editor supplies an MCP run ID. |
 
 ## Request flow
 
@@ -82,9 +84,15 @@ Every runtime has a separate UUID. Runtime paths are `/root` paths and are resol
   content with the baseline accepted on load or save, including after pre-save
   callbacks and packing. These optimistic checks do not lock external processes.
 - Scene patches compare both the active scene path and an opaque token derived from its history plus live serializable graph. Atomic patches finish validation before creating their single undo action; dry runs create no action, and saving requires an explicit `save: true` plus `save_resource` capability.
+- Animation patches require both scene guards, use local resource copies and one
+  undo action, and never save implicitly. Native graph preflight runs before
+  animation scene-version enumeration; key/resource cloning has decoded-key,
+  semantic Variant, and packed-buffer budgets. The bridge validates the animation
+  inputs against the same schemas published by its offline schema tool.
 - Stopping a run and runtime `free`/`queue_free` calls require explicit confirmation.
 - The controller records a debugger disconnect separately from a process exit and retains ownership so the requested run can still be stopped.
 
 See [AUTOMATION_TOOLS_V2.md](AUTOMATION_TOOLS_V2.md) for automation schemas,
+[ANIMATION_TOOLS.md](ANIMATION_TOOLS.md) for animation authoring and playback,
 [README.md](README.md) for other editor methods, and the
 [test guide](../../../misc/godot_mcp_bridge/test/README.md) for verification procedures.

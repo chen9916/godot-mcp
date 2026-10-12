@@ -1,6 +1,6 @@
-# Godot MCP 0.2.0 release status
+# Godot MCP 0.3.0 release status
 
-Updated: 2026-10-07. This document owns release scope and executed verification
+Updated: 2026-10-12. This document owns release scope and executed verification
 evidence. Setup, contracts, architecture, and reproducible commands live in the
 [bridge guide](misc/godot_mcp_bridge/README.md),
 [engine guide](editor/debugger/godot_mcp/README.md),
@@ -13,7 +13,11 @@ evidence. Setup, contracts, architecture, and reproducible commands live in the
 The target is the local Godot MCP editor/runtime integration on Windows x86_64,
 distributed with the standard stdio bridge, Node runtime, locked production
 dependencies, and license notices. The engine is a custom Godot 4.8-dev build.
-The distribution with integrated Windows export templates is
+The new release target with integrated Windows export templates is
+`artifacts/Godot-MCP-0.3.0-Windows-x86_64-20261012`. It includes double-click
+setup/connection-check launchers and the [five-step guide](MCP_QUICKSTART.md).
+New OpenCode configurations use V2; existing V1/V2 configurations are preserved.
+The previous verified distribution is
 `artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007-templates`. The earlier
 `artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007` bundle remains available without
 export templates. Final payload checks run after
@@ -21,10 +25,66 @@ the source commit and rebuild; their results are recorded in the adjacent
 `.verification.json` report. The ZIP and `.sha256` sidecar are produced only
 after those checks pass.
 
-The stdio MCP server identifies as 0.2.0. The lockfile now uses MCP SDK 1.32.1,
+The stdio MCP server identifies as 0.3.0. The lockfile uses MCP SDK 1.32.1,
 and the selected bundled runtime is Node.js 22.23.1. Existing 2026-10-03 and
 2026-10-05 distributions retain their original editor/bridge code and are
 separate artifacts.
+
+## Animation suite and easy setup in 0.3.0 (2026-10-12)
+
+The current source adds nine animation tools (83 tools total): offline animation
+schemas; library/clip/track/key inspection and atomic editing; nested
+AnimationTree graph inspection, structural editing, and validation; and
+owned-runtime animation playback, state-machine, parameter, one-shot, transition,
+and root-motion inspection/control.
+
+Animation editor patches require the active scene path/version, support dry runs,
+edit local copies of animation resources, and commit one undo action. Saving is a
+separate explicit operation. The bridge validates the new inputs against their
+published schemas; native handlers also enforce engine-specific validation and
+bounds. The editor advertises `animation_schema_version: 1` through session info.
+See [animation tools](editor/debugger/godot_mcp/ANIMATION_TOOLS.md) for the full
+contracts and examples. Windows packages include the runtime/bridge and all
+matching Windows export templates, so users need no build tools or separate npm
+installation. Setup remains opt-in and preserves unrelated client settings.
+
+These source changes are not included in the existing 2026-10-07 archives or
+export templates. A matching rebuilt editor/bridge and an MCP reconnect are
+required; the user's existing running editor is not automatically replaced.
+The current isolated verification editor is
+`bin/godot.windows.editor.x86_64.mcp_controller_verify.exe`; the earlier
+`mcp_latest_verify` executable is preserved, including any running editor using
+it. Ordinary non-`@tool` AnimationTree controller scripts now retain their script
+references and exported values during graph edits, parameter inspection, dry
+runs, and undo/redo. Editor-executing tree scripts and custom scripted graph
+resources remain restricted. The matching source bridge
+is built with `npm.cmd run build` in `misc/godot_mcp_bridge/`. Native verification
+is reproducible with `misc/godot_mcp_bridge/scripts/run-native-tests.mjs`, which
+copies the binary and fixtures into an isolated profile and retains evidence logs.
+
+| Animation verification | Current result |
+| --- | --- |
+| Bridge default suite | 89 passed, 6 optional live workflows skipped; 95 total, including new OpenCode V2 defaults and legacy-preservation regressions. |
+| Isolated animation/protocol workflows | Passed on the controller-support verification editor; both are required again against the packaged editor by the 0.3.0 release gate. |
+| Dependency audit | 0 reported vulnerabilities on 2026-10-12. |
+| Portable ZIP tooling probe | Passed CRC/hash/checksum round trip; tampering and failed release gates rejected before creating an archive. |
+| Standard SDK schemas/discovery | Passed, including offline schemas and malformed-input rejection across four protocol versions. |
+| Windows runtime, blend-space, and Transition objects, `werror=yes` | Passed in editor/debug-template/release-template configurations, including lifetime, typed-integer, manual-triangle reload, and per-instance Transition initialization fixes. |
+| Native MCP and UndoRedo regressions | 90 MCP tests / 2,234 assertions and 3 UndoRedo tests / 51 assertions passed in an isolated installation, with no unexpected diagnostics. Includes 52 animation graph/library regressions, ordinary controller preservation, and rejection of editor-executing tree scripts before property hooks. |
+| Isolated native protocol workflow | Passed ownership, resource lifetime, UTF-8 framing, and GDScript query regressions. |
+| Complete Windows editor build, `werror=yes` | Passed with ordinary controller-script authoring, reviewed graph/library fixes, lexical scene-version ordering, manual-triangle reload, and per-instance Transition initialization. A temporary SCons profile redirected only the editor output, reusing the verified object configuration without overwriting the running editor. |
+| Isolated animation editor/runtime workflow | Passed all 16 runtime actions, controller-script/export preservation through graph authoring and packing, controller execution in the owned runtime, nested/automatic state transitions, one-shot and transition requests, typed keys/parameters, bounded root-motion snapshots, parameter-preserving rename, ordinary undo/redo, save/reload, freed-reference handling, pause/resume, and stale-run rejection. No native or script diagnostics. |
+
+The packaged 0.3.0 release gate requires native regressions, package inventory
+and source hashes, exact 83-tool discovery, animation/controller authoring and
+runtime checks, double-click setup/doctor launchers, editor setup, ordinary
+release workflows, and actual Windows debug/release exports. The final executed
+outcome is recorded in the new archive's `.verification.json`, not inferred from
+the older evidence below. The GitHub release is a Windows MCP distribution of a
+custom development engine, not an official stable Godot release.
+
+The original packaged-release evidence below remains dated 2026-10-07; it does
+not establish verification of the new source suite or a new distribution.
 
 ## Windows export templates
 

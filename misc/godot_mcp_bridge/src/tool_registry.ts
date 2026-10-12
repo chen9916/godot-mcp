@@ -1,3 +1,5 @@
+import { create_animation_tool_definitions, get_animation_schema_document } from "./animation_tools.js";
+
 export type GodotCapability =
 	| "read_scene"
 	| "write_scene"
@@ -325,7 +327,12 @@ export function get_scene_patch_schema_document(): Record<string, unknown> {
 	};
 }
 
+export function get_animation_schema(): Record<string, unknown> {
+	return get_animation_schema_document(PATCH_SCHEMA_DEFINITIONS);
+}
+
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
+	...create_animation_tool_definitions(PATCH_SCHEMA_DEFINITIONS),
 	{
 		name: "godot.session.info",
 		description: "Get active Godot MCP session metadata and capabilities.",

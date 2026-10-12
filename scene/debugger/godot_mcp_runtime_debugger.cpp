@@ -43,11 +43,18 @@
 #include "core/object/callable_mp.h"
 #include "core/os/time.h"
 #include "core/variant/variant.h"
+#include "scene/animation/animation_blend_tree.h"
+#include "scene/animation/animation_node_state_machine.h"
+#include "scene/animation/animation_player.h"
+#include "scene/animation/animation_tree.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
 #include "scene/main/window.h"
 #include "servers/rendering/rendering_server.h"
+
+#include <cfloat>
+#include <limits>
 
 namespace {
 constexpr int MAX_SERIALIZED_ITEMS = 2000;
@@ -55,6 +62,539 @@ constexpr int MAX_SERIALIZED_CHARACTERS = 256 * 1024;
 constexpr int MAX_PENDING_REQUESTS = 128;
 constexpr int MAX_FRAME_WAIT = 600;
 constexpr int MAX_CAPTURE_DIMENSION = 4096;
+constexpr int MAX_ANIMATION_PARAMETER_NAMES = 256;
+constexpr int MAX_ANIMATION_PATH_LENGTH = 4096;
+constexpr int MAX_ANIMATION_PATH_DEPTH = 32;
+constexpr double MAX_ANIMATION_TIME = 31540000.0;
+constexpr double MAX_ANIMATION_SPEED = 1000000.0;
+
+static bool _animation_string(const Variant &p_value) {
+	return p_value.get_type() == Variant::STRING || p_value.get_type() == Variant::STRING_NAME;
+}
+
+static bool _animation_number(const Variant &p_value, double p_min, double p_max, double &r_number) {
+	if (!p_value.is_num()) {
+		return false;
+	}
+	r_number = p_value;
+	return Math::is_finite(r_number) && r_number >= p_min && r_number <= p_max;
+}
+
+static bool _animation_path(const String &p_path, bool p_parameter = true) {
+	if (p_path.is_empty() || p_path.length() > MAX_ANIMATION_PATH_LENGTH || p_path.contains(":")) {
+		return false;
+	}
+	const int count = p_path.get_slice_count("/");
+	if (count > MAX_ANIMATION_PATH_DEPTH || (p_parameter && p_path.get_slicec('/', 0) != "parameters")) {
+		return false;
+	}
+	for (int i = 0; i < count; i++) {
+		const String part = p_path.get_slicec('/', i);
+		if (part.is_empty() || part == "." || part == "..") {
+			return false;
+		}
+	}
+	return true;
+}
+
+static Ref<AnimationNode> _animation_graph_node(AnimationTree *p_tree, const String &p_prefix) {
+	if (!_animation_path(p_prefix)) {
+		return Ref<AnimationNode>();
+	}
+	Ref<AnimationNode> graph = p_tree->get_root_animation_node();
+	for (int i = 1; graph.is_valid() && i < p_prefix.get_slice_count("/"); i++) {
+		const StringName child = p_prefix.get_slicec('/', i);
+		const Ref<AnimationNodeStateMachine> state_machine = graph;
+		const Ref<AnimationNodeBlendTree> blend_tree = graph;
+		if ((state_machine.is_valid() && !state_machine->has_node(child)) || (blend_tree.is_valid() && !blend_tree->has_node(child))) {
+			return Ref<AnimationNode>();
+		}
+		graph = graph->get_child_by_name(child);
+	}
+	return graph;
+}
+
+static Ref<AnimationNode> _animation_parameter_node(AnimationTree *p_tree, const String &p_parameter, StringName &r_parameter_name) {
+	const String prefix = p_parameter.get_base_dir();
+	r_parameter_name = p_parameter.get_file();
+	if (prefix.get_file() == "conditions") {
+		const Ref<AnimationNodeStateMachine> state_machine = _animation_graph_node(p_tree, prefix.get_base_dir());
+		if (state_machine.is_valid()) {
+			r_parameter_name = "conditions/" + p_parameter.get_file();
+			return state_machine;
+		}
+	}
+	return _animation_graph_node(p_tree, prefix);
+}
+
+static bool _animation_property(AnimationTree *p_tree, const String &p_name, PropertyInfo &r_info) {
+	if (!_animation_path(p_name) || !p_name.begins_with("parameters/")) {
+		return false;
+	}
+	List<PropertyInfo> properties;
+	p_tree->get_property_list(&properties);
+	for (const PropertyInfo &property : properties) {
+		if (property.name == p_name) {
+			r_info = property;
+			return true;
+		}
+	}
+	return false;
+}
+
+// Convert already bounded, pointer-free values to useful JSON rather than the
+// string representation JSON.stringify uses for native vector variants.
+static Variant _animation_json_value(const Variant &p_value) {
+	switch (p_value.get_type()) {
+		case Variant::FLOAT:
+			return Math::is_finite((double)p_value) ? p_value : Variant();
+		case Variant::STRING_NAME:
+		case Variant::NODE_PATH:
+			return String(p_value);
+		case Variant::VECTOR2: {
+			const Vector2 v = p_value;
+			return _animation_json_value(Array{ v.x, v.y });
+		}
+		case Variant::VECTOR2I: {
+			const Vector2i v = p_value;
+			return _animation_json_value(Array{ v.x, v.y });
+		}
+		case Variant::VECTOR3: {
+			const Vector3 v = p_value;
+			return _animation_json_value(Array{ v.x, v.y, v.z });
+		}
+		case Variant::VECTOR3I: {
+			const Vector3i v = p_value;
+			return _animation_json_value(Array{ v.x, v.y, v.z });
+		}
+		case Variant::VECTOR4: {
+			const Vector4 v = p_value;
+			return _animation_json_value(Array{ v.x, v.y, v.z, v.w });
+		}
+		case Variant::VECTOR4I: {
+			const Vector4i v = p_value;
+			return _animation_json_value(Array{ v.x, v.y, v.z, v.w });
+		}
+		case Variant::QUATERNION: {
+			const Quaternion v = p_value;
+			return _animation_json_value(Array{ v.x, v.y, v.z, v.w });
+		}
+		case Variant::COLOR: {
+			const Color v = p_value;
+			return _animation_json_value(Array{ v.r, v.g, v.b, v.a });
+		}
+		case Variant::RECT2: {
+			const Rect2 v = p_value;
+			return _animation_json_value(Array{ v.position.x, v.position.y, v.size.x, v.size.y });
+		}
+		case Variant::RECT2I: {
+			const Rect2i v = p_value;
+			return _animation_json_value(Array{ v.position.x, v.position.y, v.size.x, v.size.y });
+		}
+		case Variant::PLANE: {
+			const Plane v = p_value;
+			return _animation_json_value(Array{ v.normal.x, v.normal.y, v.normal.z, v.d });
+		}
+		case Variant::AABB: {
+			const AABB v = p_value;
+			return Array{ _animation_json_value(v.position), _animation_json_value(v.size) };
+		}
+		case Variant::TRANSFORM2D: {
+			const Transform2D v = p_value;
+			return Array{ _animation_json_value(v[0]), _animation_json_value(v[1]), _animation_json_value(v[2]) };
+		}
+		case Variant::BASIS: {
+			const Basis v = p_value;
+			return Array{ _animation_json_value(v.get_column(0)), _animation_json_value(v.get_column(1)), _animation_json_value(v.get_column(2)) };
+		}
+		case Variant::TRANSFORM3D: {
+			const Transform3D v = p_value;
+			return Array{ _animation_json_value(v.basis.get_column(0)), _animation_json_value(v.basis.get_column(1)),
+				_animation_json_value(v.basis.get_column(2)), _animation_json_value(v.origin) };
+		}
+		case Variant::PROJECTION: {
+			const Projection v = p_value;
+			return Array{ _animation_json_value(v[0]), _animation_json_value(v[1]), _animation_json_value(v[2]), _animation_json_value(v[3]) };
+		}
+		case Variant::ARRAY:
+		case Variant::PACKED_BYTE_ARRAY:
+		case Variant::PACKED_INT32_ARRAY:
+		case Variant::PACKED_INT64_ARRAY:
+		case Variant::PACKED_FLOAT32_ARRAY:
+		case Variant::PACKED_FLOAT64_ARRAY:
+		case Variant::PACKED_STRING_ARRAY:
+		case Variant::PACKED_VECTOR2_ARRAY:
+		case Variant::PACKED_VECTOR3_ARRAY:
+		case Variant::PACKED_COLOR_ARRAY:
+		case Variant::PACKED_VECTOR4_ARRAY: {
+			Array result;
+			for (const Variant &value : (Array)p_value) {
+				result.push_back(_animation_json_value(value));
+			}
+			return result;
+		}
+		case Variant::DICTIONARY: {
+			Dictionary result;
+			for (const KeyValue<Variant, Variant> &entry : (Dictionary)p_value) {
+				result[entry.key] = _animation_json_value(entry.value);
+			}
+			return result;
+		}
+		default:
+			return p_value;
+	}
+}
+
+// JSON cannot preserve Variant types. Decode against the existing property,
+// never by loading a resource or accepting an Object supplied by the caller.
+static bool _animation_decode_value(const Variant &p_value, Variant::Type p_type, Variant &r_value,
+		int p_depth = 0, const Variant &p_existing = Variant()) {
+	if (p_depth > 8 || p_type == Variant::OBJECT || p_type == Variant::RID || p_type == Variant::CALLABLE || p_type == Variant::SIGNAL) {
+		return false;
+	}
+	Variant value = p_value;
+	bool explicit_integer = false;
+	if (value.get_type() == Variant::DICTIONARY) {
+		const Dictionary typed = value;
+		const bool explicit_type = typed.has("__type");
+		const bool native_type = typed.has("type") && (typed.has("value") || typed.has("args")) && p_type != Variant::DICTIONARY;
+		if (explicit_type || native_type) {
+			const Variant type_value = typed.get(explicit_type ? "__type" : "type", Variant());
+			if (!_animation_string(type_value)) {
+				return false;
+			}
+			const String type_name = type_value;
+			explicit_integer = type_name == "int";
+			if (p_type == Variant::NIL) {
+				bool found = false;
+				for (int i = 0; i < Variant::VARIANT_MAX; i++) {
+					if (type_name == Variant::get_type_name((Variant::Type)i)) {
+						p_type = (Variant::Type)i;
+						found = true;
+						break;
+					}
+				}
+				if (!found || p_type == Variant::OBJECT || p_type == Variant::RID || p_type == Variant::CALLABLE || p_type == Variant::SIGNAL) {
+					return false;
+				}
+			} else if (type_name != Variant::get_type_name(p_type)) {
+				return false;
+			}
+			if (typed.has("value")) {
+				value = typed["value"];
+			} else if (typed.has("args")) {
+				value = typed["args"];
+			}
+		}
+	}
+	if (p_type == Variant::NIL) {
+		if (value.get_type() == Variant::NIL) {
+			r_value = value;
+			return true;
+		}
+		p_type = value.get_type();
+	}
+	if (p_type == Variant::BOOL || p_type == Variant::STRING) {
+		if (value.get_type() != p_type) {
+			return false;
+		}
+		r_value = value;
+		return true;
+	}
+	if (p_type == Variant::STRING_NAME || p_type == Variant::NODE_PATH) {
+		if (!_animation_string(value) && value.get_type() != p_type) {
+			return false;
+		}
+		r_value = p_type == Variant::STRING_NAME ? Variant(StringName(String(value))) : Variant(NodePath(String(value)));
+		return true;
+	}
+	if (p_type == Variant::INT || p_type == Variant::FLOAT) {
+		if (p_type == Variant::INT && explicit_integer && value.get_type() == Variant::STRING) {
+			const String decimal = value;
+			const bool negative = decimal.begins_with("-");
+			const String digits = negative ? decimal.substr(1) : decimal;
+			const String bound = negative ? "9223372036854775808" : "9223372036854775807";
+			if (digits.is_empty() || digits.length() > 19 || (digits.length() > 1 && digits[0] == '0') ||
+					(digits.length() == 19 && digits > bound)) {
+				return false;
+			}
+			for (int i = 0; i < digits.length(); i++) {
+				if (digits[i] < '0' || digits[i] > '9') {
+					return false;
+				}
+			}
+			r_value = decimal.to_int();
+			return true;
+		}
+		double number;
+		if (!_animation_number(value, -DBL_MAX, DBL_MAX, number)) {
+			return false;
+		}
+		if (p_type == Variant::INT) {
+			if (value.get_type() == Variant::INT) {
+				r_value = value;
+				return true;
+			}
+			if (Math::floor(number) != number || number < -9223372036854775808.0 || number >= 9223372036854775808.0) {
+				return false;
+			}
+			r_value = (int64_t)number;
+		} else {
+			r_value = number;
+		}
+		return true;
+	}
+	if (p_type == Variant::ARRAY || p_type == Variant::DICTIONARY) {
+		if (value.get_type() != p_type) {
+			return false;
+		}
+		if (p_type == Variant::ARRAY) {
+			const Array existing = p_existing.get_type() == Variant::ARRAY ? (Array)p_existing : Array();
+			Array result;
+			if (existing.is_typed()) {
+				if (existing.get_typed_builtin() == Variant::OBJECT) {
+					return false;
+				}
+				result.set_typed(existing.get_typed_builtin(), existing.get_typed_class_name(), existing.get_typed_script());
+			}
+			for (const Variant &item : (Array)value) {
+				Variant decoded;
+				const Variant::Type element_type = existing.is_typed() ? (Variant::Type)existing.get_typed_builtin() : Variant::NIL;
+				if (!_animation_decode_value(item, element_type, decoded, p_depth + 1)) {
+					return false;
+				}
+				result.push_back(decoded);
+			}
+			r_value = result;
+		} else {
+			const Dictionary existing = p_existing.get_type() == Variant::DICTIONARY ? (Dictionary)p_existing : Dictionary();
+			Dictionary result;
+			if (existing.is_typed()) {
+				if (existing.get_typed_key_builtin() == Variant::OBJECT || existing.get_typed_value_builtin() == Variant::OBJECT) {
+					return false;
+				}
+				result.set_typed(existing.get_typed_key_builtin(), existing.get_typed_key_class_name(), existing.get_typed_key_script(),
+						existing.get_typed_value_builtin(), existing.get_typed_value_class_name(), existing.get_typed_value_script());
+			}
+			for (const KeyValue<Variant, Variant> &entry : (Dictionary)value) {
+				Variant decoded_key;
+				Variant decoded;
+				const Variant::Type key_type = existing.is_typed_key() ? (Variant::Type)existing.get_typed_key_builtin() : entry.key.get_type();
+				const Variant::Type value_type = existing.is_typed_value() ? (Variant::Type)existing.get_typed_value_builtin() : Variant::NIL;
+				if (!_animation_string(entry.key) || !_animation_decode_value(entry.key, key_type, decoded_key, p_depth + 1) ||
+						!_animation_decode_value(entry.value, value_type, decoded, p_depth + 1)) {
+					return false;
+				}
+				result[decoded_key] = decoded;
+			}
+			r_value = result;
+		}
+		return true;
+	}
+	if (p_type >= Variant::PACKED_BYTE_ARRAY && p_type <= Variant::PACKED_VECTOR4_ARRAY) {
+		if (value.get_type() != Variant::ARRAY && value.get_type() != p_type) {
+			return false;
+		}
+		Variant::Type element_type;
+		switch (p_type) {
+			case Variant::PACKED_BYTE_ARRAY:
+			case Variant::PACKED_INT32_ARRAY:
+			case Variant::PACKED_INT64_ARRAY:
+				element_type = Variant::INT;
+				break;
+			case Variant::PACKED_FLOAT32_ARRAY:
+			case Variant::PACKED_FLOAT64_ARRAY:
+				element_type = Variant::FLOAT;
+				break;
+			case Variant::PACKED_STRING_ARRAY:
+				element_type = Variant::STRING;
+				break;
+			case Variant::PACKED_VECTOR2_ARRAY:
+				element_type = Variant::VECTOR2;
+				break;
+			case Variant::PACKED_VECTOR3_ARRAY:
+				element_type = Variant::VECTOR3;
+				break;
+			case Variant::PACKED_COLOR_ARRAY:
+				element_type = Variant::COLOR;
+				break;
+			case Variant::PACKED_VECTOR4_ARRAY:
+				element_type = Variant::VECTOR4;
+				break;
+			default:
+				return false;
+		}
+		Array result;
+		for (const Variant &item : (Array)value) {
+			Variant decoded;
+			if (!_animation_decode_value(item, element_type, decoded, p_depth + 1)) {
+				return false;
+			}
+			if ((p_type == Variant::PACKED_BYTE_ARRAY && ((int64_t)decoded < 0 || (int64_t)decoded > 255)) ||
+					(p_type == Variant::PACKED_INT32_ARRAY && ((int64_t)decoded < INT32_MIN || (int64_t)decoded > INT32_MAX)) ||
+					(p_type == Variant::PACKED_FLOAT32_ARRAY && Math::abs((double)decoded) > FLT_MAX)) {
+				return false;
+			}
+			result.push_back(decoded);
+		}
+		const Variant argument = result;
+		const Variant *pointer = &argument;
+		Callable::CallError error;
+		Variant::construct(p_type, r_value, &pointer, 1, error);
+		return error.error == Callable::CallError::CALL_OK;
+	}
+
+	if (p_type == Variant::COLOR && _animation_string(value)) {
+		if (!Color::html_is_valid(String(value))) {
+			return false;
+		}
+		r_value = Color::html(String(value));
+		return true;
+	}
+	if (p_type == Variant::TRANSFORM3D && value.get_type() == Variant::ARRAY && Array(value).size() == 2) {
+		Variant basis;
+		Variant origin;
+		if (!_animation_decode_value(Array(value)[0], Variant::BASIS, basis, p_depth + 1) ||
+				!_animation_decode_value(Array(value)[1], Variant::VECTOR3, origin, p_depth + 1)) {
+			return false;
+		}
+		r_value = Transform3D(basis, origin);
+		return true;
+	}
+	Array components;
+	LocalVector<Variant::Type> types;
+	const char *names[4] = { "x", "y", "z", "w" };
+	int count = 0;
+	bool integer = false;
+	switch (p_type) {
+		case Variant::VECTOR2I:
+			integer = true;
+			[[fallthrough]];
+		case Variant::VECTOR2:
+			count = 2;
+			break;
+		case Variant::VECTOR3I:
+			integer = true;
+			[[fallthrough]];
+		case Variant::VECTOR3:
+			count = 3;
+			break;
+		case Variant::VECTOR4I:
+			integer = true;
+			[[fallthrough]];
+		case Variant::VECTOR4:
+		case Variant::QUATERNION:
+			count = 4;
+			break;
+		case Variant::COLOR:
+			count = 4;
+			names[0] = "r";
+			names[1] = "g";
+			names[2] = "b";
+			names[3] = "a";
+			break;
+		case Variant::RECT2I:
+			integer = true;
+			[[fallthrough]];
+		case Variant::RECT2:
+			count = 4;
+			names[2] = "width";
+			names[3] = "height";
+			break;
+		case Variant::PLANE:
+			count = 4;
+			names[3] = "d";
+			break;
+		case Variant::AABB:
+			types.push_back(Variant::VECTOR3);
+			types.push_back(Variant::VECTOR3);
+			names[0] = "position";
+			names[1] = "size";
+			break;
+		case Variant::TRANSFORM2D:
+		case Variant::BASIS:
+		case Variant::TRANSFORM3D:
+		case Variant::PROJECTION: {
+			const Variant::Type axis_type = p_type == Variant::TRANSFORM2D ? Variant::VECTOR2 : (p_type == Variant::PROJECTION ? Variant::VECTOR4 : Variant::VECTOR3);
+			for (int i = 0; i < (p_type == Variant::TRANSFORM3D || p_type == Variant::PROJECTION ? 4 : 3); i++) {
+				types.push_back(axis_type);
+			}
+			names[0] = "x_axis";
+			names[1] = "y_axis";
+			names[2] = p_type == Variant::TRANSFORM2D ? "origin" : "z_axis";
+			names[3] = p_type == Variant::PROJECTION ? "w_axis" : "origin";
+		} break;
+		default:
+			return false;
+	}
+	if (count > 0) {
+		for (int i = 0; i < count; i++) {
+			types.push_back(integer ? Variant::INT : Variant::FLOAT);
+		}
+	}
+	if (value.get_type() == p_type) {
+		// Native math values are normalized through the same finite component checks.
+		value = _animation_json_value(value);
+		if (value.get_type() == Variant::DICTIONARY) {
+			value = ((Dictionary)value).get("args", Variant());
+		}
+	}
+	if (value.get_type() == Variant::ARRAY) {
+		components = value;
+		// Also accept the flat constructor arguments used by JSON.from_native.
+		if (count == 0 && !types.is_empty() && components.size() > (int)types.size()) {
+			const int width = types[0] == Variant::VECTOR2 ? 2 : (types[0] == Variant::VECTOR4 ? 4 : 3);
+			if (components.size() != (int)types.size() * width) {
+				return false;
+			}
+			Array grouped;
+			for (uint32_t i = 0; i < types.size(); i++) {
+				Array axis;
+				for (int j = 0; j < width; j++) {
+					axis.push_back(components[i * width + j]);
+				}
+				grouped.push_back(axis);
+			}
+			components = grouped;
+		}
+		if (p_type == Variant::COLOR && components.size() == 3) {
+			components = components.duplicate();
+			components.push_back(1.0);
+		}
+	} else if (value.get_type() == Variant::DICTIONARY) {
+		const Dictionary fields = value;
+		for (uint32_t i = 0; i < types.size(); i++) {
+			if (!fields.has(names[i]) && !(p_type == Variant::COLOR && i == 3)) {
+				return false;
+			}
+			components.push_back(fields.get(names[i], 1.0));
+		}
+	} else {
+		return false;
+	}
+	if (components.size() != (int)types.size()) {
+		return false;
+	}
+	LocalVector<Variant> arguments;
+	LocalVector<const Variant *> pointers;
+	arguments.resize(types.size());
+	pointers.resize(types.size());
+	for (uint32_t i = 0; i < types.size(); i++) {
+		if (!_animation_decode_value(components[i], types[i], arguments[i], p_depth + 1)) {
+			return false;
+		}
+		if (types[i] == Variant::INT && ((int64_t)arguments[i] < INT32_MIN || (int64_t)arguments[i] > INT32_MAX)) {
+			return false;
+		}
+		if (types[i] == Variant::FLOAT && Math::abs((double)arguments[i]) > (p_type == Variant::COLOR ? (double)FLT_MAX : (double)std::numeric_limits<real_t>::max())) {
+			return false;
+		}
+		pointers[i] = &arguments[i];
+	}
+	Callable::CallError error;
+	Variant::construct(p_type, r_value, pointers.ptr(), pointers.size(), error);
+	return error.error == Callable::CallError::CALL_OK;
+}
 
 static String _runtime_argument(const String &p_prefix) {
 	for (const String &argument : OS::get_singleton()->get_cmdline_user_args()) {
@@ -239,7 +779,7 @@ bool GodotMCPRuntimeDebugger::_serialize_variant(const Variant &p_value, Variant
 	}
 
 	if (type == Variant::OBJECT) {
-		Object *object = p_value;
+		Object *object = p_value.get_validated_object();
 		if (!object) {
 			r_serialized = Variant();
 			return true;
@@ -447,6 +987,10 @@ void GodotMCPRuntimeDebugger::_handle_request(const String &p_request_id, const 
 		_handle_set_property(p_request_id, p_params);
 	} else if (p_operation == "call") {
 		_handle_call(p_request_id, p_params);
+	} else if (p_operation == "animation_get") {
+		_handle_animation_get(p_request_id, p_params);
+	} else if (p_operation == "animation_control") {
+		_handle_animation_control(p_request_id, p_params);
 	} else if (p_operation == "input_action") {
 		_handle_input_action(p_request_id, p_params);
 	} else if (p_operation == "input_event") {
@@ -579,6 +1123,544 @@ void GodotMCPRuntimeDebugger::_handle_call(const String &p_request_id, const Dic
 	data["method"] = method;
 	data["result"] = serialized;
 	_send_response(p_request_id, "call", true, data);
+}
+
+bool GodotMCPRuntimeDebugger::_validate_animation_request(const String &p_request_id, const String &p_operation,
+		const Dictionary &p_params, Node *&r_node, String &r_playback_path, Array &r_parameter_names, int &r_limit) {
+	const Variant path_value = p_params.get("node_path", Variant());
+	if (!_animation_string(path_value)) {
+		_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "node_path must be an absolute runtime /root node path.");
+		return false;
+	}
+	const String path = path_value;
+	const NodePath node_path(path);
+	if (path.length() > MAX_ANIMATION_PATH_LENGTH || (path != "/root" && !path.begins_with("/root/")) ||
+			!node_path.is_absolute() || node_path.get_subname_count() != 0) {
+		_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "node_path must be an absolute runtime /root node path without property subnames (at most 4096 characters).");
+		return false;
+	}
+	r_node = _resolve_node(path);
+	if (!r_node) {
+		_send_error(p_request_id, p_operation, "NOT_FOUND", "Runtime animation node_path was not found.");
+		return false;
+	}
+	AnimationTree *tree = Object::cast_to<AnimationTree>(r_node);
+	if (!tree && !Object::cast_to<AnimationPlayer>(r_node)) {
+		_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "node_path must identify an AnimationPlayer or AnimationTree.");
+		return false;
+	}
+	const Variant playback_value = p_params.get("playback_path", String("parameters/playback"));
+	if (!_animation_string(playback_value)) {
+		_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "playback_path must be a parameters/.../playback property path.");
+		return false;
+	}
+	r_playback_path = playback_value;
+	if (!_animation_path(r_playback_path) || !r_playback_path.ends_with("/playback")) {
+		_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "playback_path must be a canonical parameters/.../playback property path (at most 32 segments and 4096 characters).");
+		return false;
+	}
+	if (tree && p_params.has("playback_path")) {
+		PropertyInfo info;
+		const Ref<AnimationNodeStateMachine> graph = _animation_graph_node(tree, r_playback_path.get_base_dir());
+		if (!_animation_property(tree, r_playback_path, info) || graph.is_null()) {
+			_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "playback_path does not identify a state-machine playback property.");
+			return false;
+		}
+		const Ref<AnimationNodeStateMachinePlayback> playback = tree->get(r_playback_path);
+		if (playback.is_null()) {
+			_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "playback_path does not contain AnimationNodeStateMachinePlayback.");
+			return false;
+		}
+	}
+	double limit;
+	if (!_animation_number(p_params.get("limit", 256), 1, MAX_SERIALIZED_ITEMS, limit) || Math::floor(limit) != limit) {
+		_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "limit must be an integer in range 1..2000.");
+		return false;
+	}
+	r_limit = (int)limit;
+	const Variant names_value = p_params.get("parameter_names", Array());
+	if (names_value.get_type() != Variant::ARRAY || ((Array)names_value).size() > MAX_ANIMATION_PARAMETER_NAMES) {
+		_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "parameter_names must be an array of at most 256 parameter paths.");
+		return false;
+	}
+	r_parameter_names = names_value;
+	Variant bounded_names;
+	if (!_serialize_variant(r_parameter_names, bounded_names)) {
+		_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "parameter_names exceeds the runtime serialization bounds.");
+		return false;
+	}
+	for (const Variant &name_value : r_parameter_names) {
+		PropertyInfo info;
+		if (!_animation_string(name_value) || !tree || !_animation_property(tree, String(name_value), info)) {
+			_send_error(p_request_id, p_operation, "INVALID_ARGUMENT", "parameter_names must identify existing parameters/* properties of an AnimationTree.");
+			return false;
+		}
+	}
+	return true;
+}
+
+Dictionary GodotMCPRuntimeDebugger::_animation_snapshot(Node *p_node, const String &p_playback_path,
+		const Array &p_parameter_names, int p_limit) const {
+	AnimationPlayer *player = Object::cast_to<AnimationPlayer>(p_node);
+	AnimationTree *tree = Object::cast_to<AnimationTree>(p_node);
+	AnimationMixer *mixer = Object::cast_to<AnimationMixer>(p_node);
+	Dictionary data;
+	data["run_id"] = run_id;
+	data["node_path"] = String(p_node->get_path());
+	data["class"] = p_node->get_class();
+	data["process_frame"] = (int64_t)Engine::get_singleton()->get_process_frames();
+	data["physics_frame"] = (int64_t)Engine::get_singleton()->get_physics_frames();
+	data["paused"] = SceneTree::get_singleton()->is_paused();
+	data["suspended"] = SceneTree::get_singleton()->is_suspended();
+	data["active"] = mixer->is_active();
+	data["limit"] = p_limit;
+	data["truncated"] = false;
+	data["animations"] = Array();
+	data["parameters"] = Dictionary();
+	data["playback"] = Variant();
+	Dictionary root_motion;
+	root_motion["track"] = String(mixer->get_root_motion_track());
+	root_motion["local"] = mixer->is_root_motion_local();
+	root_motion["position"] = mixer->get_root_motion_position();
+	root_motion["rotation"] = mixer->get_root_motion_rotation();
+	root_motion["scale"] = mixer->get_root_motion_scale();
+	root_motion["position_accumulator"] = mixer->get_root_motion_position_accumulator();
+	root_motion["rotation_accumulator"] = mixer->get_root_motion_rotation_accumulator();
+	root_motion["scale_accumulator"] = mixer->get_root_motion_scale_accumulator();
+	data["root_motion"] = root_motion;
+	if (player) {
+		Dictionary state;
+		state["current_animation"] = String(player->get_current_animation());
+		state["assigned_animation"] = String(player->get_assigned_animation());
+		state["playing"] = player->is_playing();
+		state["valid"] = player->is_valid();
+		state["length"] = player->is_valid() ? player->get_current_animation_length() : 0.0;
+		state["position"] = player->is_valid() ? player->get_current_animation_position() : 0.0;
+		state["speed_scale"] = player->get_speed_scale();
+		state["playing_speed"] = player->get_playing_speed();
+		state["queue"] = Array();
+		data["player"] = state;
+	}
+	Ref<AnimationNodeStateMachinePlayback> playback;
+	if (tree) {
+		Dictionary state;
+		state["animation_player"] = String(tree->get_animation_player());
+		Node *bound_player = tree->get_animation_player().is_empty() ? nullptr : tree->get_node_or_null(tree->get_animation_player());
+		state["bound_player"] = bound_player ? Variant(String(bound_player->get_path())) : Variant();
+		state["tree_root"] = tree->get_root_animation_node();
+		data["tree"] = state;
+		PropertyInfo info;
+		if (_animation_property(tree, p_playback_path, info)) {
+			playback = tree->get(p_playback_path);
+		}
+		if (playback.is_valid()) {
+			Dictionary state_machine;
+			state_machine["path"] = p_playback_path;
+			state_machine["class"] = playback->get_class();
+			state_machine["playing"] = playback->is_playing();
+			state_machine["current_node"] = String(playback->get_current_node());
+			state_machine["position"] = playback->get_current_play_pos();
+			state_machine["length"] = playback->get_current_length();
+			state_machine["travel_path"] = Array();
+			state_machine["fading_from_node"] = String(playback->get_fading_from_node());
+			state_machine["fading_from_position"] = playback->get_fading_from_play_pos();
+			state_machine["fading_from_length"] = playback->get_fading_from_length();
+			state_machine["fading_length"] = playback->get_fading_time();
+			state_machine["fading_position"] = playback->get_fading_pos();
+			state_machine["at_start"] = playback->get_current_node() == SNAME("Start");
+			state_machine["at_end"] = playback->is_end();
+			data["playback"] = state_machine;
+		}
+	}
+
+	// Reserve all fixed fields and collection containers first. Share the existing
+	// serialization budget across every returned list and parameter, not per item.
+	Variant safe;
+	if (!_serialize_variant(data, safe)) {
+		return Dictionary();
+	}
+	data = _animation_json_value(safe);
+	// Leave room for the control acknowledgment fields added after a mutation.
+	int items = 16;
+	int characters = 128;
+	if (!_serialize_variant(data, safe, 0, &items, &characters)) {
+		return Dictionary();
+	}
+	bool truncated = false;
+	auto append_item = [&](Array &r_array, const Variant &p_item, int p_depth) {
+		if (r_array.size() >= p_limit) {
+			truncated = true;
+			return false;
+		}
+		int next_items = items;
+		int next_characters = characters;
+		Variant serialized;
+		if (!_serialize_variant(p_item, serialized, p_depth, &next_items, &next_characters)) {
+			truncated = true;
+			return false;
+		}
+		items = next_items;
+		characters = next_characters;
+		r_array.push_back(serialized);
+		return true;
+	};
+	if (tree) {
+		List<PropertyInfo> properties;
+		if (p_parameter_names.is_empty()) {
+			tree->get_property_list(&properties);
+		} else {
+			for (const Variant &name : p_parameter_names) {
+				PropertyInfo info;
+				if (_animation_property(tree, name, info)) {
+					properties.push_back(info);
+				}
+			}
+		}
+		Dictionary parameters = data["parameters"];
+		for (const PropertyInfo &info : properties) {
+			const String name = info.name;
+			if (!name.begins_with("parameters/") || parameters.has(name)) {
+				continue;
+			}
+			if (parameters.size() >= p_limit) {
+				truncated = true;
+				break;
+			}
+			const Variant value = tree->get(info.name);
+			Variant serialized_value;
+			if (!_serialize_variant(value, serialized_value)) {
+				truncated = true;
+				continue;
+			}
+			StringName parameter_name;
+			const Ref<AnimationNode> graph = _animation_parameter_node(tree, name, parameter_name);
+			Dictionary entry;
+			entry["type"] = Variant::get_type_name(info.type == Variant::NIL ? value.get_type() : info.type);
+			entry["value"] = _animation_json_value(serialized_value);
+			entry["read_only"] = bool(info.usage & PROPERTY_USAGE_READ_ONLY) || info.type == Variant::OBJECT ||
+					(graph.is_valid() && graph->is_parameter_read_only(parameter_name));
+			int next_items = items + 1;
+			int next_characters = characters + name.length();
+			Variant serialized_entry;
+			if (next_characters > MAX_SERIALIZED_CHARACTERS || !_serialize_variant(entry, serialized_entry, 2, &next_items, &next_characters)) {
+				truncated = true;
+				break;
+			}
+			items = next_items;
+			characters = next_characters;
+			parameters[name] = serialized_entry;
+		}
+	}
+	if (playback.is_valid()) {
+		Dictionary state = data["playback"];
+		Array path = state["travel_path"];
+		for (const StringName &name : playback->get_travel_path()) {
+			if (!append_item(path, String(name), 3)) {
+				break;
+			}
+		}
+	}
+	if (player) {
+		Dictionary state = data["player"];
+		Array queue = state["queue"];
+		for (const StringName &name : player->get_queue()) {
+			if (!append_item(queue, String(name), 3)) {
+				break;
+			}
+		}
+	}
+	Array animations = data["animations"];
+	for (const StringName &name : mixer->get_sorted_animation_list()) {
+		if (!append_item(animations, String(name), 2)) {
+			break;
+		}
+	}
+	data["truncated"] = truncated;
+	return data;
+}
+
+void GodotMCPRuntimeDebugger::_handle_animation_get(const String &p_request_id, const Dictionary &p_params) {
+	Node *node = nullptr;
+	String playback_path;
+	Array parameter_names;
+	int limit;
+	if (!_validate_animation_request(p_request_id, "animation_get", p_params, node, playback_path, parameter_names, limit)) {
+		return;
+	}
+	const Dictionary data = _animation_snapshot(node, playback_path, parameter_names, limit);
+	if (data.is_empty()) {
+		_send_error(p_request_id, "animation_get", "NON_SERIALIZABLE", "Animation snapshot exceeds the runtime serialization bounds.");
+		return;
+	}
+	_send_response(p_request_id, "animation_get", true, data);
+}
+
+void GodotMCPRuntimeDebugger::_handle_animation_control(const String &p_request_id, const Dictionary &p_params) {
+	Node *node = nullptr;
+	String playback_path;
+	Array parameter_names;
+	int limit;
+	if (!_validate_animation_request(p_request_id, "animation_control", p_params, node, playback_path, parameter_names, limit)) {
+		return;
+	}
+	auto invalid = [&](const String &p_message) {
+		_send_error(p_request_id, "animation_control", "INVALID_ARGUMENT", p_message);
+	};
+	const Variant action_value = p_params.get("action", Variant());
+	if (!_animation_string(action_value)) {
+		invalid("action must name a supported animation control action.");
+		return;
+	}
+	const String action = action_value;
+	const bool player_action = action == "player_play" || action == "player_stop" || action == "player_pause" ||
+			action == "player_seek" || action == "player_queue" || action == "player_advance";
+	const bool state_action = action == "state_start" || action == "state_travel" || action == "state_stop" || action == "state_next";
+	const bool oneshot_action = action == "oneshot_fire" || action == "oneshot_abort" || action == "oneshot_fadeout";
+	if (!player_action && !state_action && !oneshot_action && action != "set_parameter" && action != "set_active" && action != "transition_request") {
+		invalid("Unknown animation control action.");
+		return;
+	}
+	AnimationPlayer *player = Object::cast_to<AnimationPlayer>(node);
+	AnimationTree *tree = Object::cast_to<AnimationTree>(node);
+	if ((player_action && !player) || (!player_action && !tree)) {
+		invalid("This action is not supported by the target animation node class.");
+		return;
+	}
+	for (const char *name : { "animation", "state", "parameter", "transition" }) {
+		if (p_params.has(name) && (!_animation_string(p_params[name]) || String(p_params[name]).length() > MAX_ANIMATION_PATH_LENGTH)) {
+			invalid(String(name) + " must be a string of at most 4096 characters.");
+			return;
+		}
+	}
+	for (const char *name : { "from_end", "update", "reset", "keep_state", "active" }) {
+		if (p_params.has(name) && p_params[name].get_type() != Variant::BOOL) {
+			invalid(String(name) + " must be a boolean.");
+			return;
+		}
+	}
+	double time;
+	double delta;
+	double custom_blend;
+	double custom_speed;
+	if (!_animation_number(p_params.get("time", 0.0), 0.0, MAX_ANIMATION_TIME, time) ||
+			!_animation_number(p_params.get("delta", 0.0), -MAX_ANIMATION_TIME, MAX_ANIMATION_TIME, delta) ||
+			!_animation_number(p_params.get("custom_blend", -1.0), -1.0, MAX_ANIMATION_TIME, custom_blend) ||
+			(custom_blend < 0.0 && custom_blend != -1.0) ||
+			!_animation_number(p_params.get("custom_speed", 1.0), -MAX_ANIMATION_SPEED, MAX_ANIMATION_SPEED, custom_speed)) {
+		invalid("time must be finite in 0..31540000; delta in -31540000..31540000; custom_blend must be -1 or 0..31540000; custom_speed in -1000000..1000000.");
+		return;
+	}
+	const ObjectID target_id = node->get_instance_id();
+	Ref<AnimationNodeStateMachinePlayback> playback;
+	StringName animation;
+	String state;
+	String parameter;
+	Variant parameter_value;
+	if (player_action) {
+		if (action == "player_play" || action == "player_queue") {
+			animation = p_params.get("animation", StringName());
+			if (animation.is_empty() && action == "player_play") {
+				animation = player->get_assigned_animation();
+			}
+			if (animation.is_empty() || !player->has_animation(animation)) {
+				invalid("animation must identify an existing clip (player_play may omit it to resume the assigned animation).");
+				return;
+			}
+		}
+		if (action == "player_seek" && (!p_params.has("time") || (!player->is_valid() && (player->get_assigned_animation().is_empty() || !player->has_animation(player->get_assigned_animation()))))) {
+			invalid("player_seek requires time and a current or assigned animation.");
+			return;
+		}
+		if (action == "player_advance" && !p_params.has("delta")) {
+			invalid("player_advance requires delta.");
+			return;
+		}
+		if (action == "player_queue" && player->get_queue().size() >= MAX_SERIALIZED_ITEMS) {
+			invalid("The animation queue is limited to 2000 entries.");
+			return;
+		}
+	} else if (state_action) {
+		PropertyInfo info;
+		const Ref<AnimationNodeStateMachine> graph = _animation_graph_node(tree, playback_path.get_base_dir());
+		if (graph.is_null() || !_animation_property(tree, playback_path, info)) {
+			invalid("playback_path must identify an AnimationNodeStateMachinePlayback property and its graph.");
+			return;
+		}
+		playback = tree->get(playback_path);
+		if (playback.is_null() || graph->get_state_machine_type() == AnimationNodeStateMachine::STATE_MACHINE_TYPE_GROUPED) {
+			invalid("Grouped state machines must be controlled through their parent playback.");
+			return;
+		}
+		if (action == "state_start" || action == "state_travel") {
+			state = p_params.get("state", String());
+			if (!_animation_path(state, false) || state.contains("/Start") || state.contains("/End")) {
+				invalid("state must be a canonical existing state path; grouped Start/End paths cannot be requested directly.");
+				return;
+			}
+			Ref<AnimationNodeStateMachine> current_graph = graph;
+			for (int i = 0; i < state.get_slice_count("/"); i++) {
+				const StringName name = state.get_slicec('/', i);
+				if (current_graph.is_null() || !current_graph->has_node(name)) {
+					invalid("state does not exist in the graph identified by playback_path.");
+					return;
+				}
+				if (i + 1 < state.get_slice_count("/")) {
+					current_graph = current_graph->get_child_by_name(name);
+					if (current_graph.is_null() || current_graph->get_state_machine_type() != AnimationNodeStateMachine::STATE_MACHINE_TYPE_GROUPED) {
+						invalid("Only grouped states can be traversed through a parent state path; use the nested machine's playback_path instead.");
+						return;
+					}
+				}
+			}
+		}
+	} else if (action == "set_active") {
+		if (!p_params.has("active")) {
+			invalid("set_active requires active.");
+			return;
+		}
+	} else {
+		parameter = p_params.get("parameter", String());
+		if (!_animation_path(parameter)) {
+			invalid("parameter must be a canonical parameters/* property or graph prefix.");
+			return;
+		}
+		if (oneshot_action) {
+			const Ref<AnimationNodeOneShot> graph = _animation_graph_node(tree, parameter);
+			if (graph.is_null()) {
+				invalid("OneShot parameter must identify an AnimationNodeOneShot graph prefix, for example parameters/Attack.");
+				return;
+			}
+			parameter += "/request";
+			parameter_value = action == "oneshot_fire" ? AnimationNodeOneShot::ONE_SHOT_REQUEST_FIRE : (action == "oneshot_abort" ? AnimationNodeOneShot::ONE_SHOT_REQUEST_ABORT : AnimationNodeOneShot::ONE_SHOT_REQUEST_FADE_OUT);
+		} else if (action == "transition_request") {
+			const Ref<AnimationNodeTransition> graph = _animation_graph_node(tree, parameter);
+			const String transition = p_params.get("transition", String());
+			if (graph.is_null() || transition.is_empty() || graph->find_input(transition) < 0) {
+				invalid("transition must identify an existing input of the AnimationNodeTransition graph prefix.");
+				return;
+			}
+			parameter += "/transition_request";
+			parameter_value = transition;
+		}
+		PropertyInfo info;
+		StringName parameter_name;
+		const Ref<AnimationNode> graph = _animation_parameter_node(tree, parameter, parameter_name);
+		if (!_animation_property(tree, parameter, info) || graph.is_null() || info.type == Variant::OBJECT ||
+				(info.usage & PROPERTY_USAGE_READ_ONLY) || graph->is_parameter_read_only(parameter_name)) {
+			invalid("parameter must identify a known writable parameters/* value; playback, observer and read-only values cannot be replaced.");
+			return;
+		}
+		if (action == "set_parameter") {
+			Variant bounded;
+			if (!p_params.has("value") || !_serialize_variant(p_params["value"], bounded)) {
+				invalid("set_parameter requires a bounded serializable value (depth 8, 2000 items, 256 Ki characters).");
+				return;
+			}
+			const Variant existing = tree->get(parameter);
+			const Variant::Type type = info.type == Variant::NIL ? existing.get_type() : info.type;
+			if (!_animation_decode_value(p_params["value"], type, parameter_value, 0, existing)) {
+				invalid("value does not match the existing parameter type " + Variant::get_type_name(type) + ". Numeric components must be finite and integer components integral.");
+				return;
+			}
+			// Do not bypass the graph-specific bounds on request parameters via set_parameter.
+			if (parameter.get_file() == "request" && Object::cast_to<AnimationNodeOneShot>(graph.ptr()) &&
+					((int64_t)parameter_value < AnimationNodeOneShot::ONE_SHOT_REQUEST_NONE || (int64_t)parameter_value > AnimationNodeOneShot::ONE_SHOT_REQUEST_FADE_OUT)) {
+				invalid("OneShot request must be in range 0..3.");
+				return;
+			}
+			const Ref<AnimationNodeTransition> transition_graph = graph;
+			if (parameter.get_file() == "transition_request" && transition_graph.is_valid() &&
+					!String(parameter_value).is_empty() && transition_graph->find_input(String(parameter_value)) < 0) {
+				invalid("value must identify an existing transition input, or be empty to clear the request.");
+				return;
+			}
+			if (info.hint == PROPERTY_HINT_ENUM && parameter_value.get_type() == Variant::INT && !info.hint_string.is_empty()) {
+				const PackedStringArray choices = info.hint_string.split(",", true);
+				int64_t next_value = 0;
+				bool found = false;
+				for (const String &choice : choices) {
+					const int separator = choice.rfind(":");
+					if (separator >= 0 && choice.substr(separator + 1).is_valid_int()) {
+						next_value = choice.substr(separator + 1).to_int();
+					}
+					if ((int64_t)parameter_value == next_value) {
+						found = true;
+						break;
+					}
+					if (next_value < INT64_MAX) {
+						next_value++;
+					}
+				}
+				if (!found) {
+					invalid("value is not one of the parameter's declared enum values.");
+					return;
+				}
+			}
+			if (info.hint == PROPERTY_HINT_RANGE && parameter_value.is_num()) {
+				const PackedStringArray range = info.hint_string.split(",");
+				if (range.size() >= 2 && range[0].is_valid_float() && range[1].is_valid_float()) {
+					const double number = parameter_value;
+					if ((number < range[0].to_float() && !range.has("or_less")) || (number > range[1].to_float() && !range.has("or_greater"))) {
+						invalid("value is outside the parameter's declared range.");
+						return;
+					}
+				}
+			}
+		}
+	}
+
+	// All validation precedes the first call into gameplay animation code.
+	if (action == "player_play") {
+		player->play(animation, custom_blend, (float)custom_speed, p_params.get("from_end", false));
+	} else if (action == "player_stop") {
+		player->stop(p_params.get("keep_state", false));
+	} else if (action == "player_pause") {
+		player->pause();
+	} else if (action == "player_seek") {
+		player->seek(time, p_params.get("update", true));
+	} else if (action == "player_queue") {
+		player->queue(animation);
+	} else if (action == "player_advance") {
+		player->advance(delta);
+	} else if (action == "state_start") {
+		playback->start(state, p_params.get("reset", true));
+	} else if (action == "state_travel") {
+		playback->travel(state, p_params.get("reset", true));
+	} else if (action == "state_stop") {
+		playback->stop();
+	} else if (action == "state_next") {
+		playback->next();
+	} else if (action == "set_active") {
+		tree->set_active(p_params["active"]);
+	} else {
+		bool valid = false;
+		tree->set(parameter, parameter_value, &valid);
+		if (!valid) {
+			invalid("Godot rejected the runtime animation parameter value.");
+			return;
+		}
+	}
+
+	// Animation method tracks/signals may have freed the target during a seek,
+	// advance or stop. Never dereference the old pointer to take the snapshot.
+	node = Object::cast_to<Node>(ObjectDB::get_instance(target_id));
+	Dictionary data;
+	if (node && node->is_inside_tree()) {
+		data = _animation_snapshot(node, playback_path, parameter_names, limit);
+	}
+	if (data.is_empty()) {
+		data["run_id"] = run_id;
+		data["node_path"] = p_params["node_path"];
+		data["process_frame"] = (int64_t)Engine::get_singleton()->get_process_frames();
+		data["physics_frame"] = (int64_t)Engine::get_singleton()->get_physics_frames();
+		data["snapshot_available"] = false;
+		data["target_freed"] = !node;
+	}
+	data["action"] = action;
+	data["applied"] = true;
+	data["deferred"] = state_action || oneshot_action || action == "transition_request" ||
+			(action == "set_parameter" && (parameter.get_file() == "request" || parameter.get_file() == "transition_request"));
+	_send_response(p_request_id, "animation_control", true, data);
 }
 
 void GodotMCPRuntimeDebugger::_handle_input_action(const String &p_request_id, const Dictionary &p_params) {

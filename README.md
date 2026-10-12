@@ -12,6 +12,12 @@ This fork adds local editor and runtime automation through a standard MCP stdio
 bridge. It works with compatible MCP clients. The supported release scope and
 verification evidence are recorded in the MCP status document below.
 
+**[Download the Windows release](https://github.com/chen9916/godot-opencode-mcp/releases)**
+and follow the **[five-step quick start](MCP_QUICKSTART.md)**. The portable package
+includes Node.js, 83 MCP tools, matching Windows export templates, and
+double-click setup for compatible coding agents. This is a custom Godot 4.8-dev
+build, not an official stable engine release.
+
 - [Connection setup and troubleshooting](misc/godot_mcp_bridge/README.md)
 - [Editor endpoint and RPC methods](editor/debugger/godot_mcp/README.md)
 - [Automation tool schemas](editor/debugger/godot_mcp/AUTOMATION_TOOLS_V2.md)

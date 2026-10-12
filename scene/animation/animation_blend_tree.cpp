@@ -1257,6 +1257,7 @@ void AnimationNodeTransition::set_input_count(int p_inputs) {
 bool AnimationNodeTransition::add_input(const String &p_name) {
 	if (AnimationNode::add_input(p_name)) {
 		input_data.push_back(InputData());
+		pending_update = true;
 		return true;
 	}
 	return false;
@@ -1351,13 +1352,19 @@ AnimationNode::NodeTimeInfo AnimationNodeTransition::_process(ProcessState &p_pr
 	bool restart = false;
 	bool clear_remaining_fade = false;
 
-	if (pending_update) {
+	// Initialization is per instance: another AnimationTree sharing this resource
+	// may already have consumed the resource-wide update flag. Serialized inputs
+	// also arrive through add_input(), without setting the editor-only input_count.
+	if (pending_update || cur_current_index < 0 || cur_current_index >= get_input_count()) {
 		if (cur_current_index < 0 || cur_current_index >= get_input_count()) {
+			cur_prev_index = -1;
 			p_instance.set_parameter_prev_index(-1, p_process_state.is_testing);
 			if (get_input_count() > 0) {
+				cur_current_index = 0;
 				p_instance.set_parameter_current_index(0, p_process_state.is_testing);
 				p_instance.set_parameter_current_state(get_input_name(0), p_process_state.is_testing);
 			} else {
+				cur_current_index = -1;
 				p_instance.set_parameter_current_index(-1, p_process_state.is_testing);
 				p_instance.set_parameter_current_state(StringName(), p_process_state.is_testing);
 			}

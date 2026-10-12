@@ -115,7 +115,7 @@ function _help(): void {
 		"--project-root <path> pins a Godot project; --session-file <path> pins its session metadata.",
 		"--scope user|project selects config scope (default user). Project scope needs --project-root.",
 		"--config <file> overrides the target file for one client. --name <id> defaults to godot.",
-		"--opencode-version 1|2 selects a schema for new OpenCode config; existing V2 configs are detected.",
+		"New OpenCode configurations use V2; existing V1/V2 layouts are preserved. --opencode-version 1|2 overrides detection.",
 		"--dry-run previews setup/removal without writing. --replace permits replacing a different registration.",
 		"--no-check registers without a connection test. --timeout-ms <ms> bounds diagnostics (default 10000).",
 		"--json emits structured setup/doctor results. Setup creates backups before changing existing files.",

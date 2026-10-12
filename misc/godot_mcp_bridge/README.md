@@ -29,6 +29,11 @@ the template metadata and copied by Windows export presets that include them.
 
 ## Shared setup for MCP clients
 
+For a downloaded Windows package, start with [the five-step guide](https://github.com/chen9916/godot-opencode-mcp/blob/master/MCP_QUICKSTART.md).
+Double-click `Setup-OpenCode.cmd`, or use `Setup.cmd` to choose clients.
+`Check-Connection.cmd` checks connectivity. No separate Node/npm installation
+or compilation is required for the portable package.
+
 Use the same setup tool for **Codex, OpenCode, Hermes, Antigravity, Claude Code,
 and Claude Desktop**. It registers this bridge in the selected client's native
 configuration format; the MCP server and its tools are identical for every client.
@@ -72,9 +77,11 @@ formats, or `--config <actual-file>` to override a path for one client.
 | `claude-code` | `~/.claude.json` | `.mcp.json` |
 | `claude-desktop` | Windows `%APPDATA%/Claude/claude_desktop_config.json`; macOS `~/Library/Application Support/Claude/claude_desktop_config.json` | Use an explicit file if the app uses another location |
 
-OpenCode V1 and V2 use different structures. Setup detects existing V2
-`mcp.servers` configurations; use `--opencode-version 2` when creating a new V2
-configuration. Existing JSONC files and comments are preserved. Runtime-only
+OpenCode V1 and V2 use different structures. New configurations default to V2
+`mcp.servers`; existing V1/V2 layouts are preserved. Use `--opencode-version 1`
+for an old OpenCode installation with no existing MCP configuration, or
+`--opencode-version 2` to explicitly choose V2. Existing JSONC files and comments
+are preserved. Runtime-only
 `OPENCODE_CONFIG_CONTENT` needs an explicit `--config` choice. Alternate
 `OPENCODE_CONFIG_DIR` and Claude Code `CLAUDE_CONFIG_DIR` profiles may require
 `--config`; setup does not guess an undocumented active registry path. Claude
@@ -167,12 +174,13 @@ The MCP SDK handles initialization, version negotiation, discovery, and calls. S
 
 ## Tools and contracts
 
-The public server identity is `godot-mcp`, and tool names use the `godot.*` prefix. The bridge verifies session UUID/PID metadata, reconnects with bounded backoff, and checks advertised capabilities before forwarding calls. Tool discovery can run without an editor; `godot.scene.patch_schema` returns the recursive patch schema offline. `godot.session.info` reports bridge state even while the editor is unavailable.
+The public server identity is `godot-mcp`, and tool names use the `godot.*` prefix. The bridge verifies session UUID/PID metadata, reconnects with bounded backoff, and checks advertised capabilities before forwarding calls. The registry contains 83 tools. Tool discovery can run without an editor; `godot.scene.patch_schema` and `godot.animation.schema` return their complete operation schemas offline. `godot.session.info` reports bridge state even while the editor is unavailable.
 
 Use these references instead of a second tool/capability catalog:
 
 - [Editor endpoint overview](../../editor/debugger/godot_mcp/README.md): settings and source entry points.
 - [Automation tools v2](../../editor/debugger/godot_mcp/AUTOMATION_TOOLS_V2.md): tool contracts, capabilities, concurrency guards, runtime ownership, and result/error shapes.
+- [Animation tools](../../editor/debugger/godot_mcp/ANIMATION_TOOLS.md): nested graph authoring, clip/track/key editing, local-copy transactions, validation, and runtime playback.
 - [Architecture](../../editor/debugger/godot_mcp/ARCHITECTURE.md): transport, sessions, resource state, and runtime modules.
 
 The contracts describe intended behavior. Check [MCP status](../../MCP_STATUS.md) for known deviations before relying on mutations, save conflicts, or best-effort patches.

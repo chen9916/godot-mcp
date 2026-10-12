@@ -383,8 +383,14 @@ void AnimationNodeBlendSpace2D::_set_triangles(const Vector<int> &p_triangles) {
 	}
 #endif // DISABLE_DEPRECATED
 
+	// This is a serialized property assignment, not an append operation. Cached
+	// resources are assigned again on reload, including an empty default value.
+	triangles.clear();
 	for (int i = 0; i < p_triangles.size(); i += 3) {
 		add_triangle(p_triangles[i + 0], p_triangles[i + 1], p_triangles[i + 2]);
+	}
+	if (p_triangles.is_empty()) {
+		emit_changed();
 	}
 }
 

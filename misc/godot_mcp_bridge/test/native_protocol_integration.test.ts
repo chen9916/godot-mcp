@@ -124,9 +124,23 @@ test("isolated native protocol guards ownership, resource lifetime, UTF-8 framin
 		"Set GODOT_MCP_PROTOCOL_EDITOR to a rebuilt Windows editor for isolated native protocol regressions.",
 	timeout: 240_000,
 }, async (t) => {
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "godot-mcp-protocol-"));
+	const temporaryRoot = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Temp", "opencode") : os.tmpdir();
+	await fs.mkdir(temporaryRoot, { recursive: true });
+	const directory = await fs.mkdtemp(path.join(temporaryRoot, "godot-mcp-protocol-"));
 	const bundle = path.join(directory, "bundle");
 	const project = path.join(directory, "project");
+	const profile = path.join(directory, "profile");
+	const temporary = path.join(directory, "temp");
+	const env = {
+		...process.env,
+		APPDATA: path.join(profile, "AppData", "Roaming"), LOCALAPPDATA: path.join(profile, "AppData", "Local"),
+		USERPROFILE: profile, HOME: profile, TEMP: temporary, TMP: temporary, TMPDIR: temporary,
+		XDG_CONFIG_HOME: path.join(profile, "config"), XDG_DATA_HOME: path.join(profile, "data"), XDG_CACHE_HOME: path.join(profile, "cache"),
+	};
+	for (const relative of ["AppData/Roaming", "AppData/Local", "config", "data", "cache"]) {
+		await fs.mkdir(path.join(profile, relative), { recursive: true });
+	}
+	await fs.mkdir(temporary);
 	await fs.mkdir(bundle);
 	await fs.mkdir(path.join(project, "addons", "probe"), { recursive: true });
 	await fs.copyFile(path.resolve(process.env.GODOT_MCP_PROTOCOL_EDITOR!), path.join(bundle, "Godot.exe"));
@@ -141,7 +155,7 @@ test("isolated native protocol guards ownership, resource lifetime, UTF-8 framin
 		'[plugin]\nname="Protocol Probe"\ndescription="Disposable regression"\nauthor="Godot tests"\nversion="1"\nscript="plugin.gd"\n');
 	await fs.writeFile(path.join(project, "addons", "probe", "plugin.gd"), plugin);
 	const child = spawn(path.join(bundle, "Godot.exe"), ["--headless", "--editor", "--path", project], {
-		windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+		windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env,
 	});
 	let log = "";
 	child.stdout.on("data", (chunk) => { log += chunk; });
@@ -152,10 +166,17 @@ test("isolated native protocol guards ownership, resource lifetime, UTF-8 framin
 	});
 	finished.catch(() => {});
 	const lifecycle = new SessionLifecycle({ project_root: project, timeout_ms: 15_000 });
+	const sendCommand = async (action: string) => {
+		// Publish only a complete file: the editor polls independently and may
+		// otherwise consume an empty/partial JSON command under concurrent load.
+		const command = path.join(project, "command.json");
+		await fs.writeFile(command + ".tmp", JSON.stringify({ action }));
+		await fs.rename(command + ".tmp", command);
+	};
 	t.after(async () => {
 		await lifecycle.close();
 		if (child.exitCode === null) {
-			await fs.writeFile(path.join(project, "command.json"), JSON.stringify({ action: "quit" }));
+			await sendCommand("quit");
 			await Promise.race([finished, delay(5000)]);
 			if (child.exitCode === null) child.kill();
 		}
@@ -174,7 +195,7 @@ test("isolated native protocol guards ownership, resource lifetime, UTF-8 framin
 	};
 	const snapshot = async (action = "snapshot") => {
 		await fs.rm(path.join(project, "snapshot.json"), { force: true });
-		await fs.writeFile(path.join(project, "command.json"), JSON.stringify({ action }));
+		await sendCommand(action);
 		return waitFile("snapshot.json");
 	};
 	const call = async (method: string, params: Record<string, unknown> = {}) => data(await lifecycle.call(method, params));

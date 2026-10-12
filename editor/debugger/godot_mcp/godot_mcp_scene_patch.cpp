@@ -194,7 +194,7 @@ static String _variant_sort_key(const Variant &p_value, Node *p_root, int p_dept
 		case Variant::NIL:
 			return key + "null";
 		case Variant::OBJECT: {
-			Object *object = p_value;
+			Object *object = p_value.get_validated_object();
 			if (!object) {
 				return key + "null";
 			}
@@ -285,7 +285,9 @@ static void _hash_resource(uint64_t &r_hash, const Ref<Resource> &p_resource, Sc
 			property_names.push_back(property.name);
 		}
 	}
-	property_names.sort();
+	// StringName's default order compares intern pointers, which can change when
+	// dynamic property names are released and recreated during undo or reload.
+	property_names.sort_custom<StringName::AlphCompare>();
 	for (const StringName &property_name : property_names) {
 		bool valid = false;
 		const Variant value = p_resource->get(property_name, &valid);
@@ -360,7 +362,7 @@ static void _hash_variant(uint64_t &r_hash, const Variant &p_value, SceneVersion
 			return;
 		}
 		case Variant::OBJECT: {
-			Object *object = p_value;
+			Object *object = p_value.get_validated_object();
 			if (!object) {
 				_hash_string(r_hash, "null_object");
 				return;
@@ -437,7 +439,7 @@ static void _hash_node(uint64_t &r_hash, Node *p_node, SceneVersionHashContext &
 			groups.push_back(group.name);
 		}
 	}
-	groups.sort();
+	groups.sort_custom<StringName::AlphCompare>();
 	_hash_uint64(r_hash, groups.size());
 	for (const StringName &group : groups) {
 		_hash_string(r_hash, group);
@@ -481,7 +483,7 @@ static void _hash_node(uint64_t &r_hash, Node *p_node, SceneVersionHashContext &
 			property_names.push_back(property.name);
 		}
 	}
-	property_names.sort();
+	property_names.sort_custom<StringName::AlphCompare>();
 	for (const StringName &property_name : property_names) {
 		bool valid = false;
 		const Variant value = p_node->get(property_name, &valid);

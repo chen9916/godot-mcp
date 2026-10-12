@@ -101,6 +101,11 @@ await fs.mkdir(path.join(output, "bridge", "dist"), { recursive: true });
 await fs.copyFile(editor, path.join(output, "Godot.exe"));
 await fs.copyFile(node, path.join(output, "runtime", "node.exe"));
 await fs.writeFile(path.join(output, "godot-mcp.cmd"), '@echo off\r\n"%~dp0runtime\\node.exe" "%~dp0bridge\\dist\\main.js" %*\r\nexit /b %errorlevel%\r\n');
+for (const name of ["Setup.cmd", "Setup-OpenCode.cmd", "Check-Connection.cmd"]) {
+	const launcher = await fs.readFile(path.join(bridge, "windows", name), "utf8");
+	await fs.writeFile(path.join(output, name), launcher.replace(/\r?\n/g, "\r\n"));
+}
+await fs.copyFile(path.join(engine, "MCP_QUICKSTART.md"), path.join(output, "QUICKSTART.md"));
 await fs.copyFile(license, path.join(output, "runtime", "LICENSE"));
 await fs.writeFile(path.join(output, "_sc_"), "");
 if (export_templates) {
@@ -120,6 +125,7 @@ npm(["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--prefe
 await fs.writeFile(path.join(output, "THIRD_PARTY_NOTICES.txt"), "Godot Engine copyright and bundled third-party license texts: COPYRIGHT.txt\nNode.js and its bundled dependencies: runtime/LICENSE\nGodot MCP bridge production dependencies: bridge/node_modules/<package>/LICENSE*, COPYING*, or package metadata.\nProduction dependencies are installed from the included package-lock.json; their original notices remain included.\n");
 await fs.copyFile(path.join(bridge, "README.md"), path.join(output, "bridge", "README.md"));
 await fs.writeFile(path.join(output, "README.txt"), "Godot MCP for Windows\n\nLaunch Godot.exe and open a game project. Enable Network > Godot MCP in Editor Settings. From a terminal in this folder, run godot-mcp.cmd setup and select the client(s), or run godot-mcp.cmd setup --client antigravity --project-root \"<game-project>\". Supported: Codex, OpenCode, Hermes, Antigravity, Claude Code, Claude Desktop. Run godot-mcp.cmd clients to see config paths; use --config for an alternate path, --dry-run to preview, or config --client <id> to export without writing. Setup backs up existing config, preserves unrelated settings, and checks the MCP bridge separately from its editor connection. Refresh/restart the client after registration. Exit 2 means the bridge works but the editor is unavailable; open the selected project and run godot-mcp.cmd doctor --client <id>. See bridge/README.md for scope, overrides, removal, and diagnostics.\n\nThis bundle includes the bridge and Node runtime. Rerun setup --replace after moving the bundle to update registered absolute paths. The _sc_ file keeps editor settings inside editor_data beside Godot.exe. Copy MCP Configuration remains available at the bottom of Editor Settings for manual configuration.\n\nThis is a custom development build of Godot. RELEASE_MANIFEST.json records source identity and file hashes. Consult the source checkout's MCP_STATUS.md for executed release checks and support boundaries.\n");
+await fs.appendFile(path.join(output, "README.txt"), "\nEASY SETUP: Double-click Setup-OpenCode.cmd for OpenCode, or Setup.cmd to choose an agent. Check-Connection.cmd diagnoses the bridge and editor. Read QUICKSTART.md for the five-step guide and upgrade instructions. Node.js is bundled: no npm install, compiler, or administrator access is needed. New OpenCode configurations use V2; existing V1/V2 layouts are preserved.\n");
 const sha256 = async (filename) => createHash("sha256").update(await fs.readFile(filename)).digest("hex");
 if (export_templates) await fs.appendFile(path.join(output, "README.txt"), `\nWindows x86_64 debug and release export templates, including console companions, are included for this exact editor build. They are installed in ${export_templates.directory}; normal Windows export presets discover them without custom template paths. Templates for other platforms are not included.\n`);
 if (include_d3d12) {
@@ -137,7 +143,7 @@ async function hashes(directory, base = directory) {
 	return result;
 }
 const source_hashes = {};
-for (const directory of ["editor/debugger/godot_mcp", "tests/editor/godot_mcp", "misc/godot_mcp_bridge/src", "misc/godot_mcp_bridge/scripts", "misc/godot_mcp_bridge/test"]) {
+for (const directory of ["editor/debugger/godot_mcp", "tests/editor/godot_mcp", "misc/godot_mcp_bridge/src", "misc/godot_mcp_bridge/scripts", "misc/godot_mcp_bridge/test", "misc/godot_mcp_bridge/windows"]) {
 	for (const [name, digest] of Object.entries(await hashes(path.join(engine, directory)))) source_hashes[`${directory}/${name}`] = digest;
 }
 for (const name of [
@@ -150,6 +156,8 @@ for (const name of [
 	"editor/inspector/editor_property_name_processor.h", "editor/inspector/editor_property_name_processor.cpp",
 	"editor/debugger/SCsub", "editor/register_editor_types.cpp", "scene/register_scene_types.cpp", "scene/debugger/SCsub",
 	"scene/debugger/godot_mcp_runtime_debugger.h", "scene/debugger/godot_mcp_runtime_debugger.cpp",
+	"scene/animation/animation_blend_tree.cpp", "scene/animation/animation_blend_space_2d.cpp",
+	"README.md", "MCP_QUICKSTART.md", "MCP_STATUS.md",
 ]) source_hashes[name] = await sha256(path.join(engine, name));
 assert.equal(run("git", ["rev-parse", "HEAD"], engine).trim(), git_revision, "Source commit changed during packaging.");
 if (!allow_dirty) assert.equal(run("git", ["status", "--porcelain", "--untracked-files=normal"], engine).trim(), "", "Source changed during packaging.");
