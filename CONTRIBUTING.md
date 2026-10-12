@@ -1,5 +1,28 @@
 # Contributors guidelines
 
+## Godot MCP fork
+
+This repository maintains **Godot MCP**, a client-neutral fork of Godot Engine.
+For MCP tools, bridge/client setup, animation automation, packaging or this
+fork's documentation, use [this repository's issues](https://github.com/chen9916/godot-mcp/issues/new/choose)
+and target pull requests at `master`.
+
+- Read [the current support scope](MCP_STATUS.md) and [tool contracts](editor/debugger/godot_mcp/AUTOMATION_TOOLS_V2.md).
+- Follow [the build/test guide](misc/godot_mcp_bridge/test/README.md), add focused
+  regressions, and distinguish executed tests from skipped live workflows.
+- Use disposable projects and client configurations for integration checks.
+  Never attach secrets, `session.json`, full client profiles or private game assets.
+- Keep client support neutral and preserve dry-run, undo, explicit-save and
+  owned-runtime safety guarantees when extending tools.
+- Do not commit release binaries or local configurations. Existing release tags,
+  archives and their source/verification identities must not be silently replaced.
+
+For engine issues that also reproduce in official Godot builds, use the upstream
+tracker. The guidelines below are retained for upstream engine contributions;
+MCP feature requests are welcome in this fork's feature-request form.
+
+## Upstream Godot guidance
+
 This document summarizes the most important points for people interested in
 contributing to Godot, especially via bug reports or pull requests.
 
@@ -15,6 +38,7 @@ which details these points and more, and is a recommended read.
 
 ## Table of contents
 
+- [Godot MCP fork](#godot-mcp-fork)
 - [Reporting bugs](#reporting-bugs)
 - [Proposing features or improvements](#proposing-features-or-improvements)
 - [Contributing pull requests](#contributing-pull-requests)

@@ -1,0 +1,29 @@
+name: MCP feature request
+description: Propose a client-neutral Godot MCP tool or workflow improvement.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository maintains Godot MCP, not an OpenCode-specific integration.
+        Search existing issues and the [tool contracts](https://github.com/chen9916/godot-mcp/blob/master/editor/debugger/godot_mcp/AUTOMATION_TOOLS_V2.md) before proposing a tool.
+        For unrelated engine features, use the upstream Godot proposals repository.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What game-development workflow cannot be completed with the current tools?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the intended inputs/results and whether it operates in the editor or an owned runtime.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and alternatives
+      description: Mention dry runs, undo, saving, ownership, timeouts, compatibility, and any current workaround where relevant.

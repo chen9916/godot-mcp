@@ -9,7 +9,7 @@ official stable Godot release; back up projects before opening them.
 
 ## Set up in five steps
 
-1. Download the Windows ZIP from the repository's [Releases](https://github.com/chen9916/godot-opencode-mcp/releases)
+1. Download the Windows ZIP from the repository's [Releases](https://github.com/chen9916/godot-mcp/releases)
    page. Extract it into a permanent, writable folder; do not launch inside the
    ZIP or install under a protected folder such as `Program Files`.
 2. Run **Godot.exe** from that folder and open your game project. An ordinary
@@ -93,4 +93,4 @@ installation's named registration. Alternative clients and flags are listed by
 The bundle's `RELEASE_MANIFEST.json` records the source commit, versions, and
 file hashes. The release includes checksums and a verification report. Developers
 can reproduce the checks using
-[the build/test guide](https://github.com/chen9916/godot-opencode-mcp/blob/master/misc/godot_mcp_bridge/test/README.md).
+[the build/test guide](https://github.com/chen9916/godot-mcp/blob/master/misc/godot_mcp_bridge/test/README.md).

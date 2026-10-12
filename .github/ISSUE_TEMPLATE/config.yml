@@ -1,13 +1,21 @@
 blank_issues_enabled: false
 
 contact_links:
+  - name: Godot MCP setup and troubleshooting
+    url: https://github.com/chen9916/godot-mcp/blob/master/MCP_QUICKSTART.md
+    about: Start here for portable setup, connection checks, upgrades, and project selection.
+
+  - name: Godot MCP tool contracts and support scope
+    url: https://github.com/chen9916/godot-mcp/blob/master/MCP_STATUS.md
+    about: Check the supported workflows and verified release before reporting MCP issues.
+
   - name: Godot proposals
     url: https://github.com/godotengine/godot-proposals
-    about: Please submit feature proposals on the Godot proposals repository, not here.
+    about: Use this for upstream engine features only. MCP improvements belong in this repository's feature form.
 
   - name: Godot documentation repository
     url: https://github.com/godotengine/godot-docs
-    about: Please report issues with documentation on the Godot documentation repository, not here.
+    about: Report official engine documentation issues there. Godot MCP documentation issues belong here.
 
   - name: Godot community channels
     url: https://godotengine.org/community

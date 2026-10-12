@@ -186,7 +186,14 @@ required access; permission failures do not establish a product regression.
 Commit the final source and build its editor before packaging. The packager
 requires a clean checkout and a new output directory under `artifacts/`; it
 refuses to overwrite an existing package. Supply the complete license from the
-selected Node distribution. Run from the bridge directory:
+selected Node distribution.
+
+The published 0.3.0 binaries correspond to `godot-mcp-v0.3.0`, source commit
+`e36894e167`. Use that tag in a clean checkout to verify the existing package
+against its source. Later documentation/branding commits on `master` do not
+change the immutable release build or its manifest.
+
+Run from the bridge directory:
 
 ```powershell
 $mcpReleaseDirectory = [System.IO.Path]::GetFullPath("../../artifacts/Godot-MCP-0.3.0-Windows-x86_64-20261012")

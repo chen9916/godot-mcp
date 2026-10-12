@@ -29,7 +29,7 @@ the template metadata and copied by Windows export presets that include them.
 
 ## Shared setup for MCP clients
 
-For a downloaded Windows package, start with [the five-step guide](https://github.com/chen9916/godot-opencode-mcp/blob/master/MCP_QUICKSTART.md).
+For a downloaded Windows package, start with [the five-step guide](https://github.com/chen9916/godot-mcp/blob/master/MCP_QUICKSTART.md).
 Double-click `Setup-OpenCode.cmd`, or use `Setup.cmd` to choose clients.
 `Check-Connection.cmd` checks connectivity. No separate Node/npm installation
 or compilation is required for the portable package.

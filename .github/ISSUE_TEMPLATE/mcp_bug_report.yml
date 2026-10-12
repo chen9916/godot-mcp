@@ -1,0 +1,57 @@
+name: MCP or setup bug
+description: Report a Godot MCP tool, bridge, animation, runtime, setup, or packaging issue.
+title: "[MCP]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [quick start](https://github.com/chen9916/godot-mcp/blob/master/MCP_QUICKSTART.md) and existing issues first.
+        This form is for Godot MCP, independent of the coding agent you use.
+        **Redact secrets and private paths. Never attach session.json or a complete client configuration: they can contain credentials.**
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Setup or connection
+        - Scenes or resources
+        - Scripts or language queries
+        - Animation authoring or playback
+        - Runtime or diagnostics
+        - Bridge or protocol
+        - Windows exports or packaging
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions and environment
+      description: Godot MCP release, full editor version/commit, OS, and client name/version. Include GPU/renderer details for graphics issues.
+      placeholder: "Godot MCP 0.3.0; Godot 4.8.dev.custom_build.e36894e16; Windows x64; client and version..."
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Expected and actual behavior
+      description: Describe one problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include tool names and sanitized arguments, project setup, and whether dry_run or an owned debug run is involved.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Relevant error text and godot-mcp.cmd doctor --json output. Remove credentials, tokens, and private paths before posting.
+      render: text
+  - type: textarea
+    id: project
+    attributes:
+      label: Minimal reproduction project
+      description: Attach a small project if needed. Exclude .godot, .git, private assets, and secrets. Do not upload your full game.

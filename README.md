@@ -1,100 +1,141 @@
-# Godot Engine — MCP fork
+# Godot MCP
 
-<p align="center">
-  <a href="https://godotengine.org">
-    <img src="misc/logo/logo_outlined.svg" width="400" alt="Godot Engine logo">
-  </a>
-</p>
+**Built-in Godot editor and runtime automation for compatible AI coding agents.**
+One standard Model Context Protocol (MCP) bridge, independent of any agent brand.
 
-## Godot MCP fork
+[![Release](https://img.shields.io/github/v/release/chen9916/godot-mcp?include_prereleases)](https://github.com/chen9916/godot-mcp/releases)
+[![Windows x64](https://img.shields.io/badge/portable-Windows_x64-0078D4)](MCP_QUICKSTART.md)
+[![MIT license](https://img.shields.io/badge/license-MIT-green)](LICENSE.txt)
 
-This fork adds local editor and runtime automation through a standard MCP stdio
-bridge. It works with compatible MCP clients. The supported release scope and
-verification evidence are recorded in the MCP status document below.
+## Download
 
-**[Download the Windows release](https://github.com/chen9916/godot-opencode-mcp/releases)**
-and follow the **[five-step quick start](MCP_QUICKSTART.md)**. The portable package
-includes Node.js, 83 MCP tools, matching Windows export templates, and
-double-click setup for compatible coding agents. This is a custom Godot 4.8-dev
-build, not an official stable engine release.
+**[Get Godot MCP 0.3.0 for Windows x64](https://github.com/chen9916/godot-mcp/releases/tag/godot-mcp-v0.3.0)**
+· **[Quick start](MCP_QUICKSTART.md)** · **[Verification and support scope](MCP_STATUS.md)**
 
-- [Connection setup and troubleshooting](misc/godot_mcp_bridge/README.md)
-- [Editor endpoint and RPC methods](editor/debugger/godot_mcp/README.md)
-- [Automation tool schemas](editor/debugger/godot_mcp/AUTOMATION_TOOLS_V2.md)
-- [Architecture](editor/debugger/godot_mcp/ARCHITECTURE.md)
-- [Build and test procedures](misc/godot_mcp_bridge/test/README.md)
-- [Remaining work and verification evidence](MCP_STATUS.md)
+The portable ZIP contains everything needed to connect an agent to this editor:
 
-Upgrading from the older OpenCode-only fork? The supported implementation is now
-`editor/debugger/godot_mcp` and `misc/godot_mcp_bridge`, with settings under
-`network/godot_mcp`. Replace the old `godot-opencode` client registration with the
-new `godot` registration using the quick-start guide; do not run both bridges.
+| Included | Details |
+| --- | --- |
+| Godot editor | Custom Godot **4.8-dev**, with built-in MCP and a console companion. |
+| MCP bridge | **83 tools**; bundled Node.js and locked production dependencies. |
+| Windows exports | Matching x64 debug/release templates and console companions, preinstalled. |
+| Easy setup | Double-click setup and connection-check launchers; no separate npm install or compilation. |
+| Release evidence | Source/file manifest, SHA-256 checksums, and the passing verification report. |
 
-## 2D and 3D cross-platform game engine
+**This is a custom development build, not an official stable Godot release.**
+Back up projects first. Binaries are unsigned. Only Windows x64 binaries and
+templates are provided; other platforms are not release-verified.
 
-**[Godot Engine](https://godotengine.org) is a feature-packed, cross-platform
-game engine to create 2D and 3D games from a unified interface.** It provides a
-comprehensive set of [common tools](https://godotengine.org/features), so that
-users can focus on making games without having to reinvent the wheel. Games can
-be exported with one click to a number of platforms, including the major desktop
-platforms (Linux, macOS, Windows), mobile platforms (Android, iOS), as well as
-Web-based platforms and [consoles](https://godotengine.org/consoles).
+## Start in five steps
 
-## Free, open source and community-driven
+1. Download the ZIP and extract it into a permanent writable folder.
+2. Open your game project in the bundle's **Godot.exe**.
+3. Enable **Editor Settings > Network > Godot MCP**.
+4. Run **Setup.cmd** to choose your agent, or **Setup-OpenCode.cmd** for OpenCode.
+5. Refresh/reopen the agent, then run **Check-Connection.cmd**.
 
-Godot is completely free and open source under the very permissive [MIT license](https://godotengine.org/license).
-No strings attached, no royalties, nothing. The users' games are theirs, down
-to the last line of engine code. Godot's development is fully independent and
-community-driven, empowering users to help shape their engine to match their
-expectations. It is supported by the [Godot Foundation](https://godot.foundation/)
-not-for-profit.
+Setup supports **Codex, OpenCode, Hermes, Antigravity, Claude Code, and Claude
+Desktop** configurations. It backs up existing files and preserves unrelated
+settings. Standard MCP stdio also works with other compatible clients through
+manual configuration export. Application-specific compatibility is not a claim
+that every agent version has been tested.
 
-Before being open sourced in [February 2014](https://github.com/godotengine/godot/commit/0b806ee0fc9097fa7bda7ac0109191c9c5e0a1ac),
-Godot had been developed by [Juan Linietsky](https://github.com/reduz) and
-[Ariel Manzur](https://github.com/punto-) for several years as an in-house
-engine, used to publish several work-for-hire titles.
+Read [the quick start](MCP_QUICKSTART.md) for upgrades, project selection,
+troubleshooting, and safe removal. The editor must stay open while tools are used.
 
-![Screenshot of a 3D scene in the Godot Engine editor](https://raw.githubusercontent.com/godotengine/godot-design/master/screenshots/editor_tps_demo_1920x1080.jpg)
+## What agents can do
 
-## Getting the engine
+- **Scenes and resources:** inspect nodes, create/edit scenes and resources,
+  connect signals, import assets, and apply guarded multi-operation scene patches.
+- **Scripts:** inspect editor buffers, validate GDScript, reload safely, and use
+  bounded language queries without silently discarding unsaved work.
+- **Animation authoring:** inspect and edit libraries, clips, all track/key
+  types, nested AnimationTree graphs, state machines, blend spaces, and filters.
+- **Animation playback:** inspect and control owned debug runs through all 16
+  animation actions, including transitions, one-shots, typed parameters, and
+  root motion.
+- **Runtime debugging:** inspect owned game runs, read/write properties, call
+  methods, pause/step/resume, inject input, capture viewports, and read diagnostics.
 
-### Binary downloads
+Graph/animation patches use scene-version guards, local resource copies, dry
+runs, and one undo action. Saving is explicit. Ordinary non-`@tool` AnimationTree
+controller scripts and exported values are preserved; unsafe editor-executing
+scripts and custom scripted AnimationNodes remain restricted.
 
-Official binaries for the Godot editor and the export templates can be found
-[on the Godot website](https://godotengine.org/download).
+```mermaid
+flowchart LR
+    Agent[Compatible MCP client] <-->|stdio| Bridge[Node.js MCP bridge]
+    Bridge <-->|localhost JSON-RPC| Editor[Godot MCP editor]
+    Editor <-->|owned debug session| Runtime[Game runtime]
+```
 
-### Compiling from source
+The editor endpoint binds to localhost. Its internal TCP port is **not** an HTTP
+MCP URL. Agents can change projects: review changes and use version control.
+Cancellation/timeouts stop waiting, not necessarily an already-dispatched edit.
+Release exports do not expose the debug-only MCP runtime integration.
 
-[See the official docs](https://docs.godotengine.org/en/latest/engine_details/development/compiling)
-for compilation instructions for every supported platform.
+## Verified release
 
-## Community and contributing
+The 0.3.0 package passed **all 11 release gates**, covering dependency auditing,
+bridge tests, native regressions, packaged setup/discovery, real editor
+restart/reconnect and moved-bundle checks, animation/protocol/runtime/settings
+workflows, and Windows exports.
 
-Godot is not only an engine but an ever-growing community of users and engine
-developers. The main community channels are listed [on the homepage](https://godotengine.org/community).
+- 90 native MCP tests / 2,234 assertions, plus 3 UndoRedo tests / 51 assertions.
+- 89 default bridge tests passed; the optional editor workflows were run through
+  the separate isolated release checks, not inferred from skipped tests.
+- Actual Windows debug/release exports and all four standalone main/console runs.
+- No reported dependency vulnerabilities; archive CRCs, inventory and entry
+  hashes checked before upload.
 
-The best way to get in touch with the core engine developers is to join the
-[Godot Contributors Chat](https://chat.godotengine.org).
+The downloadable release is pinned to **`godot-mcp-v0.3.0`**, source commit
+**`e36894e167`**. `master` may include subsequent documentation updates. See the
+attached verification report and [MCP_STATUS.md](MCP_STATUS.md) for exact evidence
+and limits; these checks do not certify every GPU driver, renderer, extension or
+game project.
 
-To get started contributing to the project, see the [contributing guide](CONTRIBUTING.md).
-This document also includes guidelines for reporting bugs.
+## Source and documentation
 
-## Documentation and demos
+| Area | Reference |
+| --- | --- |
+| User setup and troubleshooting | [Quick start](MCP_QUICKSTART.md) · [Bridge guide](misc/godot_mcp_bridge/README.md) |
+| Tool contracts | [Automation tools](editor/debugger/godot_mcp/AUTOMATION_TOOLS_V2.md) · [Animation tools](editor/debugger/godot_mcp/ANIMATION_TOOLS.md) |
+| Architecture | [Design and safety](editor/debugger/godot_mcp/ARCHITECTURE.md) |
+| Native editor integration | [`editor/debugger/godot_mcp`](editor/debugger/godot_mcp) |
+| Runtime integration | [`scene/debugger/godot_mcp_runtime_debugger.cpp`](scene/debugger/godot_mcp_runtime_debugger.cpp) |
+| Standard MCP bridge and setup | [`misc/godot_mcp_bridge`](misc/godot_mcp_bridge) |
+| Build, tests and packaging | [Reproduction guide](misc/godot_mcp_bridge/test/README.md) |
+| Current verification and boundaries | [Release status](MCP_STATUS.md) |
 
-The official documentation is hosted on [Read the Docs](https://docs.godotengine.org).
-It is maintained by the Godot community in its own [GitHub repository](https://github.com/godotengine/godot-docs).
+For source development, build the bridge with `npm ci`, `npm run build`, and
+`npm test` inside `misc/godot_mcp_bridge`. Native editor/template builds require
+the Godot build toolchain; use the reproduction guide rather than the portable
+user setup instructions.
 
-The [class reference](https://docs.godotengine.org/en/latest/classes/)
-is also accessible from the Godot editor.
+### Upgrading from the old OpenCode-only fork
 
-We also maintain official demos in their own [GitHub repository](https://github.com/godotengine/godot-demo-projects)
-as well as a list of [awesome Godot community resources](https://github.com/godotengine/awesome-godot).
+The maintained implementation is now `godot_mcp` / `godot_mcp_bridge`, with editor
+settings under `network/godot_mcp`. Register the new `godot` connection and disable
+the legacy `godot-opencode` registration separately. Do not run both bridges.
 
-There are also a number of other
-[learning resources](https://docs.godotengine.org/en/latest/community/tutorials.html)
-provided by the community, such as text and video tutorials, demos, etc.
-Consult the [community channels](https://godotengine.org/community)
-for more information.
+## Support and contributions
 
-[![Code Triagers Badge](https://www.codetriage.com/godotengine/godot/badges/users.svg)](https://www.codetriage.com/godotengine/godot)
-[![Translate on Weblate](https://hosted.weblate.org/widgets/godot-engine/-/godot/svg-badge.svg)](https://hosted.weblate.org/engage/godot-engine/?utm_source=widget)
+[Report an MCP/setup bug](https://github.com/chen9916/godot-mcp/issues/new?template=mcp_bug_report.yml)
+· [Request an MCP feature](https://github.com/chen9916/godot-mcp/issues/new?template=mcp_feature_request.yml)
+· [Contribute](CONTRIBUTING.md)
+
+Include the release, editor and client versions and a small reproduction.
+Remove credentials and private paths from diagnostics; never attach `session.json`
+or a complete client configuration. Engine problems that also reproduce in an
+official Godot build belong in the upstream engine tracker.
+
+## Upstream and license
+
+This project is a fork of [Godot Engine](https://godotengine.org), the free and
+open-source 2D/3D engine. It is not an official Godot distribution. Godot and the
+MCP integration use the [MIT license](LICENSE.txt); bundled third-party terms
+remain in [COPYRIGHT.txt](COPYRIGHT.txt) and the release notices.
+
+[Upstream source](https://github.com/godotengine/godot) ·
+[Official Godot documentation](https://docs.godotengine.org) ·
+[Godot contributors](AUTHORS.md) · [Contributing](CONTRIBUTING.md)

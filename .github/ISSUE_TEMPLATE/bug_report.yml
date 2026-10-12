@@ -1,14 +1,15 @@
-name: Bug report
-description: Report a bug in Godot
+name: Engine bug (not MCP)
+description: Report an engine issue in this fork. Use the MCP form for tool, bridge, or setup problems.
 
 body:
   - type: markdown
     attributes:
       value: |
         When reporting bugs, please follow the guidelines in this template. This helps identify the problem precisely and thus enables contributors to fix it faster.
+        For MCP tools, animation authoring, client setup, or release packaging, choose the **MCP or setup bug** form instead.
         - Write a descriptive issue title above.
         - The golden rule is to **always open *one* issue for *one* bug**. If you notice several bugs and want to report them, make sure to create one new issue for each of them.
-        - Search [open](https://github.com/godotengine/godot/issues) and [closed](https://github.com/godotengine/godot/issues?q=is%3Aissue+is%3Aclosed) issues to ensure it has not already been reported. If you don't find a relevant match or if you're unsure, don't hesitate to **open a new issue**. The bugsquad will handle it from there if it's a duplicate.
+        - Search [this fork's issues](https://github.com/chen9916/godot-mcp/issues) and [upstream engine issues](https://github.com/godotengine/godot/issues) to avoid duplicates. If the problem also reproduces in an official Godot build, report the engine issue upstream; otherwise include the fork version here.
         - Verify that you are using a [supported Godot version](https://docs.godotengine.org/en/latest/about/release_policy.html). Please always check if your issue is reproducible in the latest version – it may already have been fixed!
         - If you use a custom build, please test if your issue is reproducible in official builds too. Likewise if you use any C++ modules, GDExtensions, or editor plugins, you should check if the bug is reproducible in a project without these.
 

@@ -10,20 +10,48 @@ evidence. Setup, contracts, architecture, and reproducible commands live in the
 
 ## Release scope
 
+The project is **Godot MCP**, a client-neutral integration maintained at
+[`chen9916/godot-mcp`](https://github.com/chen9916/godot-mcp). OpenCode is one of
+the supported clients, not the project identity. The default branch is `master`.
+
+### Verified 0.3.0 distribution
+
+The release build is pinned to **`godot-mcp-v0.3.0`**, source commit
+**`e36894e16772baa1d2f777d0b5567da0adda780a`**. Its package passed all 11 final
+release gates: dependency audit, bridge compilation/default tests, native MCP and
+UndoRedo units, package/source/setup smoke, Windows exports, animation, native
+protocol, release/runtime workflows, settings setup, and final inventory.
+All four isolated workflows ran without skips or failures. The default bridge
+suite separately passed 89 tests with six optional workflows skipped.
+
+The portable ZIP contains 3,833 files and is 192,825,097 bytes. ZIP/TPZ CRCs,
+inventories and per-entry hashes were verified. The downloadable verification
+report binds the package manifest and source revision; checksums accompany both
+archives. See the [release page](https://github.com/chen9916/godot-mcp/releases/tag/godot-mcp-v0.3.0).
+
+| Archive | Bytes | SHA-256 |
+| --- | --- | --- |
+| `Godot-MCP-0.3.0-Windows-x86_64-20261012.zip` | 192,825,097 | `15ed9d3463ec4bc27addc52b4db82c7313c1cd02d6aaafe2283970d011fa8f1d` |
+| `Godot-MCP-0.3.0-Windows-x86_64-templates.tpz` | 63,144,942 | `f5e460469194b5ba617d85277d6d6d87a302db4440201695c54014503771103a` |
+
+Repository branding/documentation updates on `master` do not rebuild or silently
+replace these binaries. For exact release-source verification, use the tagged
+revision rather than a later documentation commit. Existing archives and user
+projects remain separate and unchanged.
+
 The target is the local Godot MCP editor/runtime integration on Windows x86_64,
 distributed with the standard stdio bridge, Node runtime, locked production
 dependencies, and license notices. The engine is a custom Godot 4.8-dev build.
-The new release target with integrated Windows export templates is
+The verified 0.3.0 payload with integrated Windows export templates is
 `artifacts/Godot-MCP-0.3.0-Windows-x86_64-20261012`. It includes double-click
 setup/connection-check launchers and the [five-step guide](MCP_QUICKSTART.md).
 New OpenCode configurations use V2; existing V1/V2 configurations are preserved.
 The previous verified distribution is
 `artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007-templates`. The earlier
 `artifacts/Godot-MCP-0.2.0-Windows-x86_64-20261007` bundle remains available without
-export templates. Final payload checks run after
-the source commit and rebuild; their results are recorded in the adjacent
-`.verification.json` report. The ZIP and `.sha256` sidecar are produced only
-after those checks pass.
+export templates. Final 0.3.0 payload checks passed after the source commit and
+rebuild; their results are recorded in the adjacent `.verification.json` report.
+The ZIP and `.sha256` sidecar were produced only after those checks passed.
 
 The stdio MCP server identifies as 0.3.0. The lockfile uses MCP SDK 1.32.1,
 and the selected bundled runtime is Node.js 22.23.1. Existing 2026-10-03 and
@@ -51,10 +79,11 @@ installation. Setup remains opt-in and preserves unrelated client settings.
 These source changes are not included in the existing 2026-10-07 archives or
 export templates. A matching rebuilt editor/bridge and an MCP reconnect are
 required; the user's existing running editor is not automatically replaced.
-The current isolated verification editor is
-`bin/godot.windows.editor.x86_64.mcp_controller_verify.exe`; the earlier
-`mcp_latest_verify` executable is preserved, including any running editor using
-it. Ordinary non-`@tool` AnimationTree controller scripts now retain their script
+The final release editor was built as
+`bin/godot.windows.editor.x86_64.mcp_release_0_3_0.exe` and packaged as `Godot.exe`.
+Earlier `mcp_controller_verify` and `mcp_latest_verify` executables are preserved,
+including any running editor using them. Ordinary non-`@tool` AnimationTree
+controller scripts now retain their script
 references and exported values during graph edits, parameter inspection, dry
 runs, and undo/redo. Editor-executing tree scripts and custom scripted graph
 resources remain restricted. The matching source bridge
@@ -65,11 +94,12 @@ copies the binary and fixtures into an isolated profile and retains evidence log
 | Animation verification | Current result |
 | --- | --- |
 | Bridge default suite | 89 passed, 6 optional live workflows skipped; 95 total, including new OpenCode V2 defaults and legacy-preservation regressions. |
-| Isolated animation/protocol workflows | Passed on the controller-support verification editor; both are required again against the packaged editor by the 0.3.0 release gate. |
+| Isolated animation/protocol workflows | Passed on the controller-support verification editor and again against the packaged editor in the final 0.3.0 release gate. |
 | Dependency audit | 0 reported vulnerabilities on 2026-10-12. |
 | Portable ZIP tooling probe | Passed CRC/hash/checksum round trip; tampering and failed release gates rejected before creating an archive. |
 | Merged-source release editor and native tests | Built with `werror=yes`; 90 MCP tests / 2,234 assertions and 3 UndoRedo tests / 51 assertions passed again with no unexpected diagnostics. |
 | Merged-source animation workflow | Passed again against `mcp_release_0_3_0`, including all 16 runtime actions, controller preservation, undo/redo and persistence; zero skips or diagnostics. |
+| Final 0.3.0 portable release | All 11 release gates passed against the clean-source package, including all four isolated workflows and real Windows exports. ZIP/TPZ CRCs, inventories, entry hashes and checksum sidecars passed. |
 | Windows launcher probe | Passed quoted Unicode/space paths, new OpenCode V2 registration and offline exit-code propagation using only disposable configuration. |
 | Standard SDK schemas/discovery | Passed, including offline schemas and malformed-input rejection across four protocol versions. |
 | Windows runtime, blend-space, and Transition objects, `werror=yes` | Passed in editor/debug-template/release-template configurations, including lifetime, typed-integer, manual-triangle reload, and per-instance Transition initialization fixes. |
