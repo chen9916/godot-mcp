@@ -14,7 +14,7 @@ let allow_dirty = false;
 for (let i = 2; i < process.argv.length; i++) {
 	const key = process.argv[i];
 	if (key === "--allow-dirty") { assert.equal(allow_dirty, false); allow_dirty = true; continue; }
-	assert.ok(["--editor", "--output", "--node", "--node-license", "--npm-cli", ...template_options, ...d3d12_options].includes(key), `Unknown option: ${key}`);
+	assert.ok(["--editor", "--editor-console", "--output", "--node", "--node-license", "--npm-cli", ...template_options, ...d3d12_options].includes(key), `Unknown option: ${key}`);
 	assert.ok(process.argv[i + 1] && !process.argv[i + 1].startsWith("--") && !args.has(key), `Missing or duplicate option: ${key}`);
 	args.set(key, path.resolve(process.argv[++i]));
 }
@@ -30,13 +30,14 @@ const relative = path.relative(artifacts, output);
 assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative), "Output must be a NEW directory inside this checkout's artifacts directory.");
 await assert.rejects(fs.lstat(output), { code: "ENOENT" }, "Refusing to reuse or overwrite an existing output.");
 const editor = args.get("--editor");
+const editor_console = args.get("--editor-console");
 const node = args.get("--node") ?? process.execPath;
 const license = args.get("--node-license");
 const npm_cli = args.get("--npm-cli") ?? process.env.npm_execpath ?? path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
 const template_inputs = include_templates ? template_options.map((key) => args.get(key)) : [];
 const d3d12_inputs = include_d3d12 ? d3d12_options.map((key) => args.get(key)) : [];
-for (const input of [editor, node, license, npm_cli, ...template_inputs, ...d3d12_inputs]) assert.ok((await fs.stat(input)).isFile(), `Missing input: ${input}`);
-for (const executable of [editor, node, ...template_inputs, ...d3d12_inputs.slice(0, 2)]) {
+for (const input of [editor, ...(editor_console ? [editor_console] : []), node, license, npm_cli, ...template_inputs, ...d3d12_inputs]) assert.ok((await fs.stat(input)).isFile(), `Missing input: ${input}`);
+for (const executable of [editor, ...(editor_console ? [editor_console] : []), node, ...template_inputs, ...d3d12_inputs.slice(0, 2)]) {
 	const binary = await fs.open(executable, "r");
 	try {
 		const header = Buffer.alloc(64);
@@ -59,6 +60,8 @@ const npm = (argv, cwd) => process.stdout.write(run(process.execPath, [npm_cli, 
 npm(["run", "typecheck"], bridge);
 npm(["run", "build"], bridge);
 const editor_version = run(editor, ["--version"]).trim();
+assert.equal(editor_version.split(".").at(-1), git_revision.slice(0, 9), "Rebuild the editor from this exact source commit before packaging.");
+if (editor_console) assert.equal(run(editor_console, ["--version"]).trim(), editor_version, "Editor console companion must launch the matching editor.");
 const node_version = run(node, ["--version"]).trim();
 assert.ok(Number(node_version.replace(/^v/, "").split(".")[0]) >= 18, "Node.js 18 or later is required.");
 let export_templates;
@@ -99,6 +102,7 @@ if (include_templates) {
 await fs.mkdir(path.join(output, "runtime"), { recursive: true });
 await fs.mkdir(path.join(output, "bridge", "dist"), { recursive: true });
 await fs.copyFile(editor, path.join(output, "Godot.exe"));
+if (editor_console) await fs.copyFile(editor_console, path.join(output, "Godot.console.exe"));
 await fs.copyFile(node, path.join(output, "runtime", "node.exe"));
 await fs.writeFile(path.join(output, "godot-mcp.cmd"), '@echo off\r\n"%~dp0runtime\\node.exe" "%~dp0bridge\\dist\\main.js" %*\r\nexit /b %errorlevel%\r\n');
 for (const name of ["Setup.cmd", "Setup-OpenCode.cmd", "Check-Connection.cmd"]) {
@@ -129,8 +133,11 @@ await fs.appendFile(path.join(output, "README.txt"), "\nEASY SETUP: Double-click
 const sha256 = async (filename) => createHash("sha256").update(await fs.readFile(filename)).digest("hex");
 if (export_templates) await fs.appendFile(path.join(output, "README.txt"), `\nWindows x86_64 debug and release export templates, including console companions, are included for this exact editor build. They are installed in ${export_templates.directory}; normal Windows export presets discover them without custom template paths. Templates for other platforms are not included.\n`);
 if (include_d3d12) {
+	// The editor's Agility SDK path is beside its executable, independently
+	// of the versioned directory used by the Windows exporter.
+	for (const [index, filename] of ["D3D12Core.dll", "d3d12SDKLayers.dll", "D3D12-LICENSE.txt"].entries()) await fs.copyFile(d3d12_inputs[index], path.join(output, filename));
 	await fs.appendFile(path.join(output, "README.txt"), "Direct3D 12 Agility SDK runtime and debug layers are included beside the export templates. The Windows exporter copies them when the export preset enables Direct3D 12 dependency export.\n");
-	await fs.appendFile(path.join(output, "THIRD_PARTY_NOTICES.txt"), `Direct3D 12 Agility SDK runtime and debug layers: ${export_templates.runtime_files.license}\n`);
+	await fs.appendFile(path.join(output, "THIRD_PARTY_NOTICES.txt"), `Direct3D 12 Agility SDK runtime and debug layers for the editor: D3D12-LICENSE.txt\nExport template runtime notices: ${export_templates.runtime_files.license}\n`);
 }
 async function hashes(directory, base = directory) {
 	const result = {};
@@ -144,7 +151,9 @@ async function hashes(directory, base = directory) {
 }
 const source_hashes = {};
 for (const directory of ["editor/debugger/godot_mcp", "tests/editor/godot_mcp", "misc/godot_mcp_bridge/src", "misc/godot_mcp_bridge/scripts", "misc/godot_mcp_bridge/test", "misc/godot_mcp_bridge/windows"]) {
-	for (const [name, digest] of Object.entries(await hashes(path.join(engine, directory)))) source_hashes[`${directory}/${name}`] = digest;
+	// Source identity is committed content, not ignored local caches such
+	// as Python's __pycache__ created while probing packaging scripts.
+	for (const name of run("git", ["ls-files", "-z", "--", directory], engine).split("\u0000").filter(Boolean)) source_hashes[name] = await sha256(path.join(engine, name));
 }
 for (const name of [
 	"misc/godot_mcp_bridge/package.json", "misc/godot_mcp_bridge/package-lock.json", "misc/godot_mcp_bridge/tsconfig.json", "misc/godot_mcp_bridge/tsconfig.test.json",
@@ -162,6 +171,7 @@ for (const name of [
 assert.equal(run("git", ["rev-parse", "HEAD"], engine).trim(), git_revision, "Source commit changed during packaging.");
 if (!allow_dirty) assert.equal(run("git", ["status", "--porcelain", "--untracked-files=normal"], engine).trim(), "", "Source changed during packaging.");
 const manifest = { format_version: 1, platform: "windows", architecture: "x86_64", editor_version, node_version, git_revision, git_dirty, source_sha256: source_hashes, files_sha256: await hashes(output) };
+if (editor_console) manifest.editor_console = "Godot.console.exe";
 if (export_templates) manifest.export_templates = export_templates;
 await fs.writeFile(path.join(output, "RELEASE_MANIFEST.json"), JSON.stringify(manifest, null, 2) + "\n");
 process.stdout.write(`Created ${output}\nRun: node scripts/verify-package.mjs --package "${output}"\n`);

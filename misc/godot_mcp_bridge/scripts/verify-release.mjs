@@ -18,6 +18,7 @@ const manifest_bytes = await fs.readFile(path.join(bundle, "RELEASE_MANIFEST.jso
 const manifest = JSON.parse(manifest_bytes);
 assert.equal(manifest.git_dirty, false, "Commit and rebuild the source before the release gate.");
 assert.ok(manifest.export_templates, "Ready-to-ship Windows releases must include matching export templates.");
+assert.equal(manifest.editor_console, "Godot.console.exe", "Ready-to-ship Windows releases must include the editor console companion.");
 const report_file = `${bundle}.verification.json`;
 await assert.rejects(fs.lstat(report_file), { code: "ENOENT" }, "Refusing to overwrite an existing verification report.");
 const log_directory = `${bundle}.verification-logs-${Date.now()}`;
@@ -55,6 +56,7 @@ async function run(name, executable, args, cwd = bridge, environment = {}, timeo
 }
 
 try {
+	await run("dependency-audit", process.execPath, [path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"), "audit", "--audit-level=low", "--json"]);
 	await run("compile-bridge-tests", process.execPath, [path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"), "run", "build:test"]);
 	await run("bridge-default", process.execPath, ["scripts/run-tests.mjs"]);
 	await run("native-units", node, ["misc/godot_mcp_bridge/scripts/run-native-tests.mjs", editor], engine);

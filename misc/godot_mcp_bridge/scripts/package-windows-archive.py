@@ -22,13 +22,15 @@ def sha256(filename):
 def build(bundle, output):
     bundle = bundle.resolve(strict=True)
     artifacts = Path(__file__).resolve().parents[3] / "artifacts"
+    if output.is_symlink():
+        raise ValueError("Refusing a symbolic-link output path.")
     output = output.resolve()
     if not bundle.is_relative_to(artifacts) or not output.is_relative_to(artifacts):
         raise ValueError("Bundle and new ZIP must be inside this checkout's artifacts directory.")
     if output.suffix.lower() != ".zip":
         raise ValueError("Output must have the .zip extension.")
     checksum = output.with_suffix(".zip.sha256")
-    if output.exists() or checksum.exists():
+    if output.exists() or checksum.exists() or checksum.is_symlink():
         raise ValueError("Refusing to overwrite an existing archive or checksum.")
     manifest_file = bundle / "RELEASE_MANIFEST.json"
     manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
@@ -36,6 +38,8 @@ def build(bundle, output):
     if manifest.get("git_dirty") is not False or report.get("status") != "verified":
         raise ValueError("A clean manifest and passing release verification report are required.")
     required_checks = {
+        "dependency-audit",
+        "compile-bridge-tests",
         "bridge-default",
         "native-units",
         "package-smoke-source",
@@ -67,11 +71,18 @@ def build(bundle, output):
         raise ValueError("Bundle inventory changed after verification.")
     for name, digest in expected.items():
         relative = PurePosixPath(name)
-        if relative.is_absolute() or "\\" in name or ":" in name or any(part in (".", "..") for part in relative.parts):
+        if (
+            relative.is_absolute()
+            or relative.as_posix() != name
+            or "\\" in name
+            or ":" in name
+            or any(part in (".", "..") for part in relative.parts)
+        ):
             raise ValueError("Unsafe manifest path: " + name)
         if sha256(bundle / name) != digest:
             raise ValueError("Bundle hash mismatch: " + name)
     created = False
+    checksum_created = False
     try:
         with output.open("xb") as destination:
             created = True
@@ -100,6 +111,7 @@ def build(bundle, output):
                     raise ValueError("ZIP content mismatch: " + name)
         digest = sha256(output)
         with checksum.open("x", encoding="utf-8", newline="\n") as target:
+            checksum_created = True
             target.write(f"{digest}  {output.name}\n")
         print(
             json.dumps(
@@ -114,6 +126,8 @@ def build(bundle, output):
             )
         )
     except BaseException:
+        if checksum_created:
+            checksum.unlink()
         if created:
             output.unlink()
         raise

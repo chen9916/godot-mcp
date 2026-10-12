@@ -68,6 +68,9 @@ copies the binary and fixtures into an isolated profile and retains evidence log
 | Isolated animation/protocol workflows | Passed on the controller-support verification editor; both are required again against the packaged editor by the 0.3.0 release gate. |
 | Dependency audit | 0 reported vulnerabilities on 2026-10-12. |
 | Portable ZIP tooling probe | Passed CRC/hash/checksum round trip; tampering and failed release gates rejected before creating an archive. |
+| Merged-source release editor and native tests | Built with `werror=yes`; 90 MCP tests / 2,234 assertions and 3 UndoRedo tests / 51 assertions passed again with no unexpected diagnostics. |
+| Merged-source animation workflow | Passed again against `mcp_release_0_3_0`, including all 16 runtime actions, controller preservation, undo/redo and persistence; zero skips or diagnostics. |
+| Windows launcher probe | Passed quoted Unicode/space paths, new OpenCode V2 registration and offline exit-code propagation using only disposable configuration. |
 | Standard SDK schemas/discovery | Passed, including offline schemas and malformed-input rejection across four protocol versions. |
 | Windows runtime, blend-space, and Transition objects, `werror=yes` | Passed in editor/debug-template/release-template configurations, including lifetime, typed-integer, manual-triangle reload, and per-instance Transition initialization fixes. |
 | Native MCP and UndoRedo regressions | 90 MCP tests / 2,234 assertions and 3 UndoRedo tests / 51 assertions passed in an isolated installation, with no unexpected diagnostics. Includes 52 animation graph/library regressions, ordinary controller preservation, and rejection of editor-executing tree scripts before property hooks. |
@@ -93,6 +96,8 @@ executables and their console launchers. They are installed in the portable
 editor's `editor_data/export_templates/4.8.dev/` directory, so ordinary Windows
 Desktop export presets can find them without custom template paths. Direct3D 12
 Agility runtime DLLs and their original license accompany the templates.
+The same Agility runtime and notices are included beside `Godot.exe`, and the
+portable editor includes its matching `Godot.console.exe` companion.
 
 The build uses `tests=no`, `debug_symbols=no`, `accesskit=no`, `angle=no`, and
 `werror=yes` for both template targets. The editor and templates must report the

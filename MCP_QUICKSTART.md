@@ -32,6 +32,7 @@ Try asking your agent:
 The portable editor stores its own settings beside the executable in
 `editor_data`. Keep the editor running while the agent uses its tools. The
 localhost JSON-RPC port is internal; do not enter it as an HTTP MCP URL.
+`Godot.console.exe` starts the same editor with console output for diagnostics.
 
 ## Updating or choosing a project
 
@@ -55,6 +56,10 @@ Use `--dry-run` to preview configuration changes without writing. Rerun setup
 after moving the bundle, because client launch paths are absolute. For an old
 OpenCode installation without an existing configuration, add
 `--opencode-version 1`.
+
+If upgrading from the old OpenCode-only bridge, disable its `godot-opencode`
+registration in your client after confirming the new `godot` connection. Setup
+does not delete a differently named registration or unrelated configuration.
 
 ## If something is not connected
 

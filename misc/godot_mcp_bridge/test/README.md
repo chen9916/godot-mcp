@@ -45,13 +45,13 @@ Godot-side tests in `tests/editor/godot_mcp/` are included when building with `t
 
 ```powershell
 $env:PYTHONPATH = (Resolve-Path "../scons").Path
-python -m SCons platform=windows target=editor tests=yes extra_suffix=mcp_controller_verify werror=yes debug_symbols=no accesskit=no angle=no -j12 bin/godot.windows.editor.x86_64.mcp_controller_verify.exe
-node misc/godot_mcp_bridge/scripts/run-native-tests.mjs (Resolve-Path "./bin/godot.windows.editor.x86_64.mcp_controller_verify.exe").Path
+python -m SCons platform=windows target=editor tests=yes extra_suffix=mcp_release_0_3_0 werror=yes debug_symbols=no accesskit=no angle=no -j12 bin/godot.windows.editor.x86_64.mcp_release_0_3_0.exe bin/godot.windows.editor.x86_64.mcp_release_0_3_0.console.exe
+node misc/godot_mcp_bridge/scripts/run-native-tests.mjs (Resolve-Path "./bin/godot.windows.editor.x86_64.mcp_release_0_3_0.exe").Path
 ```
 
 The explicit executable target creates a separate verification binary and avoids
 the default targets which copy optional DLLs beside a possibly running editor.
-It does not build a console companion. Native test fixtures resolve relative to
+It also builds the matching console companion. Native test fixtures resolve relative to
 the executable at `../tests/data`, so a copied executable needs that fixture
 layout too. The runner creates that disposable layout, places `_sc_` beside its
 copied binary, and redirects profile, user-data, and temporary directories. It
@@ -190,10 +190,13 @@ selected Node distribution. Run from the bridge directory:
 
 ```powershell
 $mcpReleaseDirectory = [System.IO.Path]::GetFullPath("../../artifacts/Godot-MCP-0.3.0-Windows-x86_64-20261012")
-$mcpReleaseEditor = [System.IO.Path]::GetFullPath("../../bin/godot.windows.editor.x86_64.mcp_controller_verify.exe")
-npm.cmd run package:windows -- --editor "$mcpReleaseEditor" --output "$mcpReleaseDirectory" --node-license "C:\absolute\path\to\Node\LICENSE"
-node scripts/verify-package.mjs --package "$mcpReleaseDirectory" --check-source
-$env:GODOT_MCP_RELEASE_BUNDLE = $mcpReleaseDirectory
+$mcpReleaseEditor = [System.IO.Path]::GetFullPath("../../bin/godot.windows.editor.x86_64.mcp_release_0_3_0.exe")
+$mcpReleaseConsole = [System.IO.Path]::GetFullPath("../../bin/godot.windows.editor.x86_64.mcp_release_0_3_0.console.exe")
+# Optional editor-only package. For the ready-to-ship release use the template command below instead.
+$mcpEditorOnlyDirectory = "$mcpReleaseDirectory-editor-only"
+npm.cmd run package:windows -- --editor "$mcpReleaseEditor" --editor-console "$mcpReleaseConsole" --output "$mcpEditorOnlyDirectory" --node-license "C:\absolute\path\to\Node\LICENSE"
+node scripts/verify-package.mjs --package "$mcpEditorOnlyDirectory" --check-source
+$env:GODOT_MCP_RELEASE_BUNDLE = $mcpEditorOnlyDirectory
 node --test .test-dist/test/release_editor_integration.test.js
 ```
 
@@ -221,7 +224,7 @@ Use a fresh output path, for example:
 
 ```powershell
 $mcpTemplateReleaseDirectory = $mcpReleaseDirectory
-npm.cmd run package:windows -- --editor "$mcpReleaseEditor" --output "$mcpTemplateReleaseDirectory" --node-license "C:\absolute\path\to\Node\LICENSE" --template-debug "C:\absolute\path\to\template_debug.exe" --template-release "C:\absolute\path\to\template_release.exe" --template-debug-console "C:\absolute\path\to\template_debug.console.exe" --template-release-console "C:\absolute\path\to\template_release.console.exe"
+npm.cmd run package:windows -- --editor "$mcpReleaseEditor" --editor-console "$mcpReleaseConsole" --output "$mcpTemplateReleaseDirectory" --node-license "C:\absolute\path\to\Node\LICENSE" --template-debug "C:\absolute\path\to\template_debug.exe" --template-release "C:\absolute\path\to\template_release.exe" --template-debug-console "C:\absolute\path\to\template_debug.console.exe" --template-release-console "C:\absolute\path\to\template_release.console.exe"
 node scripts/verify-package.mjs --package "$mcpTemplateReleaseDirectory" --check-source
 node scripts/verify-windows-export.mjs --package "$mcpTemplateReleaseDirectory"
 ```
@@ -243,7 +246,8 @@ For templates built with Direct3D 12, additionally pass
 `--template-d3d12-license <Agility SDK LICENSE.txt>` together. The DLLs must be
 x86_64 and match the SDK used by the build. They are installed as
 `D3D12Core.x86_64.dll` and `d3d12SDKLayers.x86_64.dll` beside the templates, with
-`D3D12-LICENSE.txt` preserving the distribution terms. The optional
+matching `D3D12Core.dll` and `d3d12SDKLayers.dll` beside the editor, and
+`D3D12-LICENSE.txt` preserving the distribution terms in both locations. The optional
 `export_templates.runtime_files` map records their hashed paths. This group
 requires the four template inputs and rejects missing DLLs or license notices.
 
@@ -259,8 +263,8 @@ the editor's remaining build options and revision; template builds can use
 `tests=no` while retaining debugging features in `template_debug`:
 
 ```powershell
-scons platform=windows target=template_debug arch=x86_64 accesskit=no angle=no debug_symbols=no tests=no werror=yes extra_suffix=mcp_templates bin/godot.windows.template_debug.x86_64.mcp_templates.exe bin/godot.windows.template_debug.x86_64.mcp_templates.console.exe
-scons platform=windows target=template_release arch=x86_64 accesskit=no angle=no debug_symbols=no tests=no werror=yes extra_suffix=mcp_templates bin/godot.windows.template_release.x86_64.mcp_templates.exe bin/godot.windows.template_release.x86_64.mcp_templates.console.exe
+scons platform=windows target=template_debug arch=x86_64 accesskit=no angle=no debug_symbols=no tests=no werror=yes extra_suffix=mcp_release_0_3_0 bin/godot.windows.template_debug.x86_64.mcp_release_0_3_0.exe bin/godot.windows.template_debug.x86_64.mcp_release_0_3_0.console.exe
+scons platform=windows target=template_release arch=x86_64 accesskit=no angle=no debug_symbols=no tests=no werror=yes extra_suffix=mcp_release_0_3_0 bin/godot.windows.template_release.x86_64.mcp_release_0_3_0.exe bin/godot.windows.template_release.x86_64.mcp_release_0_3_0.console.exe
 ```
 
 After packaging and both verifiers above pass, create a standalone TPZ from the

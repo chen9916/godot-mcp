@@ -42,10 +42,17 @@ if (process.argv.includes("--check-source")) {
 	const engine = fileURLToPath(new URL("../../../", import.meta.url));
 	const git = (args) => execFileSync("git", args, { cwd: engine, windowsHide: true, encoding: "utf8" }).trim();
 	assert.equal(git(["rev-parse", "HEAD"]), manifest.git_revision, "Package does not match the checked-out commit.");
+	assert.equal(manifest.editor_version.split(".").at(-1), manifest.git_revision.slice(0, 9), "Editor build identity must match the source commit.");
 	assert.equal(git(["status", "--porcelain", "--untracked-files=normal"]), "", "Commit the source before final package verification.");
 	for (const [name, digest] of Object.entries(manifest.source_sha256)) assert.equal(await sha256(contained_file(engine, name)), digest, `Source hash mismatch: ${name}`);
 }
 for (const name of ["Godot.exe", "godot-mcp.cmd", "Setup.cmd", "Setup-OpenCode.cmd", "Check-Connection.cmd", "QUICKSTART.md", "_sc_", "LICENSE.txt", "COPYRIGHT.txt", "runtime/node.exe", "runtime/LICENSE", "bridge/dist/main.js", "bridge/dist/animation_tools.js", "bridge/dist/setup.js", "bridge/dist/client_config.js", "bridge/dist/setup_doctor.js", "bridge/dist/setup_storage.js", "bridge/README.md", "bridge/package-lock.json"]) assert.ok(name in manifest.files_sha256, `Missing release component: ${name}`);
+if (manifest.editor_console !== undefined) {
+	assert.equal(manifest.editor_console, "Godot.console.exe");
+	assert.ok(manifest.editor_console in manifest.files_sha256);
+	const version = await exec_file_async(path.join(package_directory, manifest.editor_console), ["--version"], { windowsHide: true, encoding: "utf8", timeout: 30_000 });
+	assert.equal(version.stdout.trim(), manifest.editor_version, "Packaged console companion must launch the matching editor.");
+}
 await assert.rejects(fs.stat(path.join(package_directory, "bridge/node_modules/typescript")), { code: "ENOENT" });
 await assert.rejects(fs.stat(path.join(package_directory, "bridge/.test-dist")), { code: "ENOENT" });
 if (manifest.export_templates !== undefined) {
@@ -68,6 +75,12 @@ if (manifest.export_templates !== undefined) {
 		d3d12_layers: `${directory}/d3d12SDKLayers.x86_64.dll`,
 		license: `${directory}/D3D12-LICENSE.txt`,
 	});
+	if (templates.runtime_files) {
+		for (const [name, kind] of [["D3D12Core.dll", "d3d12_core"], ["d3d12SDKLayers.dll", "d3d12_layers"], ["D3D12-LICENSE.txt", "license"]]) {
+			assert.ok(name in manifest.files_sha256, `Missing editor Direct3D 12 component: ${name}`);
+			assert.equal(manifest.files_sha256[name], manifest.files_sha256[templates.runtime_files[kind]], "Editor and template Direct3D 12 runtime must match.");
+		}
+	}
 	for (const [kind, name] of Object.entries({ ...templates.files, ...templates.runtime_files })) {
 		assert.ok(name in manifest.files_sha256, `Missing export template hash: ${name}`);
 		const filename = contained_file(package_directory, name);
